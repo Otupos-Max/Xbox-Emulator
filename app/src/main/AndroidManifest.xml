@@ -6,13 +6,14 @@
         android:icon="@drawable/ic_launcher"
         android:theme="@android:style/Theme.Light.NoTitleBar.Fullscreen"
         android:resizeableActivity="false"
-        android:hasCode="false">
+        android:hasCode="true">
         <activity
-            android:name="android.app.NativeActivity"
+            android:name=".XenonActivity"
             android:exported="true"
             android:screenOrientation="landscape"
             android:maxAspectRatio="1.7777778"
-            android:configChanges="orientation|keyboardHidden|screenSize">
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|screenLayout|smallestScreenSize|navigation"
+            android:launchMode="singleTask">
             <meta-data
                 android:name="android.app.lib_name"
                 android:value="xenon_native" />
