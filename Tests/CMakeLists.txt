@@ -42,3 +42,19 @@ endfunction()
 xboxemu_add_test(test_ppc_decoder_smoke
     SOURCES PPC/test_decoder_smoke.cpp
 )
+
+# Memory
+xboxemu_add_test(test_memory_ram_read_write
+    SOURCES Memory/test_ram_read_write.cpp
+    LIBS    xboxemu_memory
+)
+
+xboxemu_add_test(test_memory_ram_endianness
+    SOURCES Memory/test_ram_endianness.cpp
+    LIBS    xboxemu_memory
+)
+
+xboxemu_add_test(test_memory_mmio_dispatch
+    SOURCES Memory/test_mmio_dispatch.cpp
+    LIBS    xboxemu_memory
+)
