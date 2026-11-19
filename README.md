@@ -256,11 +256,12 @@ Xbox Emulator/
 ├── Android/
 │   ├── app/
 │   └── jni/
-├── Interface/
-│   ├── index.html
-│   ├── css/
-│   ├── js/
-│   └── images/
+├── app/
+│   └── src/main/
+│       ├── AndroidManifest.xml
+│       ├── cpp/
+│       ├── res/drawable/
+│       └── assets/
 ├── Compatibility/
 ├── Tests/
 │   ├── PPC/
@@ -490,6 +491,29 @@ A escolha da GPLv3 reflete o compromisso do projeto com a abertura e com a
 devolução de melhorias à comunidade.
 
 Para detalhes, consulte o arquivo LICENSE no repositório.
+
+
+================================================================================
+ANDROID NATIVO
+================================================================================
+
+O aplicativo Android é implementado nativamente em C++ com NativeActivity,
+OpenGL ES 2.0 e o Android Native App Glue. Não existe interface web no projeto.
+
+Estrutura:
+
+- app/src/main/AndroidManifest.xml: configuração da atividade nativa
+- app/src/main/cpp/xenon_native.cpp: interface, navegação e ciclo de vida
+- app/src/main/cpp/CMakeLists.txt: ligação do núcleo C++ com EGL/GLES
+- app/src/main/res/drawable/: recursos gráficos do APK
+
+Compilar em uma máquina Android configurada:
+
+  export ANDROID_HOME=/caminho/para/android-sdk
+  export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.3.11579264
+  ./gradlew assembleDebug
+
+O APK será gerado em app/build/outputs/apk/debug/app-debug.apk.
 
 
 ================================================================================
