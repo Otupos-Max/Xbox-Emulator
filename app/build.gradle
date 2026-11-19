@@ -42,7 +42,22 @@ android {
         }
     }
 
+    // Chave fixa salva no repositório: todo APK sai com a mesma assinatura,
+    // então dá para atualizar o app sem desinstalar.
+    // Chave de desenvolvimento: não use para publicar na Play Store.
+    signingConfigs {
+        debug {
+            storeFile rootProject.file("keystore/debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
             // Keep local release installs compatible with debug installs.
