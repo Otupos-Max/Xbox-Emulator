@@ -8,25 +8,18 @@
         android:resizeableActivity="true"
         android:hasCode="true">
         <activity
-            android:name=".SplashActivity"
-            android:exported="true"
-            android:screenOrientation="landscape"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|screenLayout|smallestScreenSize|navigation"
-            android:theme="@android:style/Theme.Light.NoTitleBar.Fullscreen">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-        <activity
             android:name=".XenonActivity"
-            android:exported="false"
+            android:exported="true"
             android:screenOrientation="landscape"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|screenLayout|smallestScreenSize|navigation"
             android:launchMode="singleTask">
             <meta-data
                 android:name="android.app.lib_name"
                 android:value="xenon_native" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
         </activity>
         <meta-data
             android:name="android.max_aspect"
