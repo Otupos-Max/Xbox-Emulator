@@ -1,5 +1,6 @@
 #include <android_native_app_glue.h>
 #include <android/asset_manager.h>
+#include <aaudio/AAudio.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <android/log.h>
@@ -8,6 +9,8 @@
 #include <media/NdkMediaFormat.h>
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <cmath>
 #include <chrono>
 #include <cstdint>
@@ -25,12 +28,13 @@ enum class Screen : int { Home, Library, System, Settings };
 struct Rect { float x, y, w, h; };
 struct Color { float r, g, b, a; };
 
-constexpr Color kBg{0.031f, 0.039f, 0.051f, 1};
-constexpr Color kPanel{0.063f, 0.075f, 0.094f, 1};
-constexpr Color kPanel2{0.082f, 0.098f, 0.118f, 1};
-constexpr Color kText{0.956f, 0.969f, 0.961f, 1};
-constexpr Color kMuted{0.573f, 0.604f, 0.639f, 1};
-constexpr Color kGreen{0.459f, 0.839f, 0.608f, 1};
+// Light theme: white background to match the splash video.
+constexpr Color kBg{1.0f, 1.0f, 1.0f, 1};
+constexpr Color kPanel{0.945f, 0.953f, 0.957f, 1};
+constexpr Color kPanel2{0.882f, 0.898f, 0.910f, 1};
+constexpr Color kText{0.067f, 0.075f, 0.086f, 1};
+constexpr Color kMuted{0.420f, 0.451f, 0.490f, 1};
+constexpr Color kGreen{0.180f, 0.620f, 0.360f, 1};
 constexpr Color kBlue{0.404f, 0.682f, 0.961f, 1};
 
 struct Renderer {
@@ -312,7 +316,130 @@ void main() { gl_FragColor = color; })";
     }
 };
 
+// Plays the splash video's audio track on a background thread via AAudio.
+struct SplashAudio {
+    std::thread worker;
+    std::atomic<bool> running{false};
+
+    void start(int fd, off64_t offset, off64_t length) {
+        stop();
+        const int ownFd = dup(fd);
+        if (ownFd < 0) return;
+        running = true;
+        worker = std::thread([this, ownFd, offset, length] {
+            play(ownFd, offset, length);
+            close(ownFd);
+        });
+    }
+
+    void stop() {
+        running = false;
+        if (worker.joinable()) worker.join();
+    }
+
+    void play(int fd, off64_t offset, off64_t length) {
+        AMediaExtractor* extractor = AMediaExtractor_new();
+        AMediaCodec* codec = nullptr;
+        AAudioStream* stream = nullptr;
+        AMediaFormat* format = nullptr;
+        int32_t sampleRate = 44100;
+        int32_t channels = 2;
+
+        if (!extractor || AMediaExtractor_setDataSourceFd(extractor, fd, offset, length) != AMEDIA_OK) {
+            if (extractor) AMediaExtractor_delete(extractor);
+            return;
+        }
+        for (size_t i = 0; i < AMediaExtractor_getTrackCount(extractor); ++i) {
+            AMediaFormat* candidate = AMediaExtractor_getTrackFormat(extractor, i);
+            const char* mime = nullptr;
+            if (candidate && AMediaFormat_getString(candidate, AMEDIAFORMAT_KEY_MIME, &mime) &&
+                mime && std::strncmp(mime, "audio/", 6) == 0) {
+                AMediaExtractor_selectTrack(extractor, i);
+                format = candidate;
+                break;
+            }
+            if (candidate) AMediaFormat_delete(candidate);
+        }
+        if (!format) {
+            AMediaExtractor_delete(extractor);
+            return;
+        }
+        AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sampleRate);
+        AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &channels);
+        const char* mime = nullptr;
+        AMediaFormat_getString(format, AMEDIAFORMAT_KEY_MIME, &mime);
+        codec = mime ? AMediaCodec_createDecoderByType(mime) : nullptr;
+        bool ok = codec && AMediaCodec_configure(codec, format, nullptr, nullptr, 0) == AMEDIA_OK &&
+                  AMediaCodec_start(codec) == AMEDIA_OK;
+        AMediaFormat_delete(format);
+
+        AAudioStreamBuilder* builder = nullptr;
+        if (ok && AAudio_createStreamBuilder(&builder) == AAUDIO_OK) {
+            AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
+            AAudioStreamBuilder_setSampleRate(builder, sampleRate);
+            AAudioStreamBuilder_setChannelCount(builder, channels);
+            AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_GAME);
+            if (AAudioStreamBuilder_openStream(builder, &stream) != AAUDIO_OK) stream = nullptr;
+            AAudioStreamBuilder_delete(builder);
+        }
+        if (stream) AAudioStream_requestStart(stream);
+        ok = ok && stream;
+
+        bool inputEnded = false;
+        while (ok && running) {
+            if (!inputEnded) {
+                const ssize_t in = AMediaCodec_dequeueInputBuffer(codec, 5000);
+                if (in >= 0) {
+                    size_t size = 0;
+                    uint8_t* buf = AMediaCodec_getInputBuffer(codec, in, &size);
+                    const ssize_t n = buf ? AMediaExtractor_readSampleData(extractor, buf, size) : -1;
+                    if (n < 0) {
+                        AMediaCodec_queueInputBuffer(codec, in, 0, 0, 0, AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+                        inputEnded = true;
+                    } else {
+                        AMediaCodec_queueInputBuffer(codec, in, 0, static_cast<size_t>(n),
+                                                     AMediaExtractor_getSampleTime(extractor), 0);
+                        AMediaExtractor_advance(extractor);
+                    }
+                }
+            }
+            AMediaCodecBufferInfo info{};
+            const ssize_t out = AMediaCodec_dequeueOutputBuffer(codec, &info, 10000);
+            if (out == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+                AMediaFormat* f = AMediaCodec_getOutputFormat(codec);
+                int32_t ch = channels;
+                if (f) { AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch); AMediaFormat_delete(f); }
+                if (ch > 0) channels = ch;
+            } else if (out >= 0) {
+                size_t size = 0;
+                uint8_t* buf = AMediaCodec_getOutputBuffer(codec, out, &size);
+                if (buf && info.size > 0) {
+                    const int32_t frames = info.size / (2 * channels);
+                    AAudioStream_write(stream, buf + info.offset, frames, 1000000000LL);
+                }
+                AMediaCodec_releaseOutputBuffer(codec, out, false);
+                if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) break;
+            }
+        }
+
+        if (stream) {
+            AAudioStream_requestStop(stream);
+            AAudioStream_close(stream);
+        }
+        if (codec) {
+            AMediaCodec_stop(codec);
+            AMediaCodec_delete(codec);
+        }
+        AMediaExtractor_delete(extractor);
+    }
+};
+
 struct SplashVideo {
+    SplashAudio audio;
+    std::chrono::steady_clock::time_point playbackStart;
+    bool clockStarted = false;
+    ssize_t pendingOutput = -1;
+    AMediaCodecBufferInfo pendingInfo{};
     AMediaExtractor* extractor = nullptr;
     AMediaCodec* codec = nullptr;
     int fileDescriptor = -1;
@@ -320,6 +447,9 @@ struct SplashVideo {
     bool inputEnded = false;
 
     void stop() {
+        audio.stop();
+        pendingOutput = -1;
+        clockStarted = false;
         if (codec) {
             if (codecStarted) AMediaCodec_stop(codec);
             AMediaCodec_delete(codec);
@@ -366,6 +496,8 @@ struct SplashVideo {
             stop();
             return false;
         }
+
+        audio.start(fileDescriptor, offset, length);
 
         int videoTrack = -1;
         AMediaFormat* format = nullptr;
@@ -429,11 +561,24 @@ struct SplashVideo {
             }
         }
 
-        AMediaCodecBufferInfo info{};
-        const ssize_t outputIndex = AMediaCodec_dequeueOutputBuffer(codec, &info, 0);
-        if (outputIndex >= 0) {
+        if (pendingOutput < 0) {
+            pendingOutput = AMediaCodec_dequeueOutputBuffer(codec, &pendingInfo, 0);
+            if (pendingOutput < 0) return true;
+        }
+        // Show each frame at its timestamp so the picture stays in sync with the audio.
+        const auto now = std::chrono::steady_clock::now();
+        if (!clockStarted) {
+            playbackStart = now - std::chrono::microseconds(pendingInfo.presentationTimeUs);
+            clockStarted = true;
+        }
+        const auto due = playbackStart + std::chrono::microseconds(pendingInfo.presentationTimeUs);
+        if (now < due) return true;
+        {
+            const ssize_t outputIndex = pendingOutput;
+            const AMediaCodecBufferInfo info = pendingInfo;
+            pendingOutput = -1;
             const bool ended = (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0;
-            AMediaCodec_releaseOutputBuffer(codec, outputIndex, true);
+            AMediaCodec_releaseOutputBuffer(codec, outputIndex, info.size > 0);
             if (ended) {
                 stop();
                 return false;
