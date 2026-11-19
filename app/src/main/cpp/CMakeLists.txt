@@ -25,6 +25,7 @@ target_link_libraries(xenon_native
         xboxemu_memory
         native_app_glue
         android
+        mediandk
         EGL
         GLESv2
         log

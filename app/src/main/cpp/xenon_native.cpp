@@ -1,14 +1,22 @@
 #include <android_native_app_glue.h>
+#include <android/asset_manager.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <android/log.h>
+#include <media/NdkMediaCodec.h>
+#include <media/NdkMediaExtractor.h>
+#include <media/NdkMediaFormat.h>
 
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <sys/types.h>
 #include <vector>
+#include <unistd.h>
 
 #include "Core/Memory/MemoryManager.hpp"
 
@@ -197,18 +205,178 @@ void main() { gl_FragColor = color; })";
     void present() { eglSwapBuffers(display, surface); }
 };
 
+struct SplashVideo {
+    AMediaExtractor* extractor = nullptr;
+    AMediaCodec* codec = nullptr;
+    int fileDescriptor = -1;
+    bool codecStarted = false;
+    bool inputEnded = false;
+
+    void stop() {
+        if (codec) {
+            if (codecStarted) AMediaCodec_stop(codec);
+            AMediaCodec_delete(codec);
+            codec = nullptr;
+        }
+        codecStarted = false;
+        if (extractor) {
+            AMediaExtractor_delete(extractor);
+            extractor = nullptr;
+        }
+        if (fileDescriptor >= 0) {
+            close(fileDescriptor);
+            fileDescriptor = -1;
+        }
+        inputEnded = false;
+    }
+
+    bool start(AAssetManager* assets, ANativeWindow* window) {
+        stop();
+        if (!assets || !window) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Splash video requires an asset manager and window");
+            return false;
+        }
+
+        AAsset* asset = AAssetManager_open(assets, "video splash.mp4", AASSET_MODE_RANDOM);
+        if (!asset) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Splash video asset not found");
+            return false;
+        }
+
+        off64_t offset = 0;
+        off64_t length = 0;
+        fileDescriptor = AAsset_openFileDescriptor64(asset, &offset, &length);
+        AAsset_close(asset);
+        if (fileDescriptor < 0) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to open splash video asset descriptor");
+            return false;
+        }
+
+        extractor = AMediaExtractor_new();
+        if (!extractor ||
+            AMediaExtractor_setDataSourceFd(extractor, fileDescriptor, offset, length) != AMEDIA_OK) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to read splash video");
+            stop();
+            return false;
+        }
+
+        int videoTrack = -1;
+        AMediaFormat* format = nullptr;
+        for (size_t i = 0; i < AMediaExtractor_getTrackCount(extractor); ++i) {
+            AMediaFormat* candidate = AMediaExtractor_getTrackFormat(extractor, i);
+            const char* mime = nullptr;
+            if (candidate && AMediaFormat_getString(candidate, AMEDIAFORMAT_KEY_MIME, &mime) &&
+                mime && std::strncmp(mime, "video/", 6) == 0) {
+                videoTrack = static_cast<int>(i);
+                format = candidate;
+                break;
+            }
+            if (candidate) AMediaFormat_delete(candidate);
+        }
+
+        if (videoTrack < 0 || !format) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Splash video has no video track");
+            stop();
+            return false;
+        }
+
+        const char* mime = nullptr;
+        AMediaFormat_getString(format, AMEDIAFORMAT_KEY_MIME, &mime);
+        codec = mime ? AMediaCodec_createDecoderByType(mime) : nullptr;
+        const bool configured = codec &&
+            AMediaExtractor_selectTrack(extractor, static_cast<size_t>(videoTrack)) == AMEDIA_OK &&
+            AMediaCodec_configure(codec, format, window, nullptr, 0) == AMEDIA_OK;
+        AMediaFormat_delete(format);
+        if (!configured || AMediaCodec_start(codec) != AMEDIA_OK) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to initialize splash video decoder");
+            stop();
+            return false;
+        }
+
+        codecStarted = true;
+        return true;
+    }
+
+    bool renderFrame() {
+        if (!codec || !extractor) return false;
+
+        if (!inputEnded) {
+            const ssize_t inputIndex = AMediaCodec_dequeueInputBuffer(codec, 0);
+            if (inputIndex >= 0) {
+                size_t bufferSize = 0;
+                uint8_t* buffer = AMediaCodec_getInputBuffer(codec, inputIndex, &bufferSize);
+                const ssize_t sampleSize = buffer
+                    ? AMediaExtractor_readSampleData(extractor, buffer, bufferSize)
+                    : -1;
+                if (sampleSize < 0) {
+                    AMediaCodec_queueInputBuffer(codec, inputIndex, 0, 0, 0,
+                                                 AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+                    inputEnded = true;
+                } else {
+                    const int64_t presentationTime = AMediaExtractor_getSampleTime(extractor);
+                    AMediaCodec_queueInputBuffer(codec, inputIndex, 0,
+                                                 static_cast<size_t>(sampleSize),
+                                                 presentationTime, 0);
+                    AMediaExtractor_advance(extractor);
+                }
+            }
+        }
+
+        AMediaCodecBufferInfo info{};
+        const ssize_t outputIndex = AMediaCodec_dequeueOutputBuffer(codec, &info, 0);
+        if (outputIndex >= 0) {
+            const bool ended = (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0;
+            AMediaCodec_releaseOutputBuffer(codec, outputIndex, true);
+            if (ended) {
+                stop();
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
 struct AppState {
     Renderer renderer;
+    SplashVideo splashVideo;
     Screen screen = Screen::Home;
     bool initialized = false;
+    bool rendererInitialized = false;
     bool showingSplash = true;
+    bool playingSplashVideo = false;
+    bool memoryInitialized = false;
+    ANativeWindow* window = nullptr;
+    AAssetManager* assetManager = nullptr;
     std::chrono::steady_clock::time_point splashStarted;
     xboxemu::memory::MemoryManager memory;
 
     void initialize() {
+        if (memoryInitialized) return;
         xboxemu::memory::MemoryManager::Config config;
         config.ram_size = 512u * 1024u * 1024u;
         memory.initialize(config);
+        memoryInitialized = true;
+    }
+
+    void initializeWindow(ANativeWindow* newWindow, AAssetManager* assets) {
+        window = newWindow;
+        assetManager = assets;
+        initialized = true;
+        initialize();
+        splashStarted = std::chrono::steady_clock::now();
+
+        renderer.shutdown();
+        rendererInitialized = false;
+        if (showingSplash && splashVideo.start(assetManager, window)) {
+            playingSplashVideo = true;
+            return;
+        }
+
+        playingSplashVideo = false;
+        rendererInitialized = renderer.initialize(window);
+        if (!rendererInitialized) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to initialize the splash screen renderer");
+        }
     }
 
     bool hit(float px, float py, const Rect& r) const {
@@ -345,6 +513,19 @@ struct AppState {
     }
 
     void draw() {
+        if (playingSplashVideo) {
+            if (!splashVideo.renderFrame()) {
+                playingSplashVideo = false;
+                showingSplash = false;
+                rendererInitialized = renderer.initialize(window);
+                if (!rendererInitialized) {
+                    __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to initialize the app renderer");
+                }
+            }
+            return;
+        }
+        if (!rendererInitialized) return;
+
         renderer.begin();
         if (showingSplash) {
             drawSplash();
@@ -378,16 +559,23 @@ void onAppCmd(android_app* app, int32_t cmd) {
     switch (cmd) {
         case APP_CMD_INIT_WINDOW:
             if (app->window && state) {
-                state->initialized = state->renderer.initialize(app->window);
-                state->initialize();
-                state->splashStarted = std::chrono::steady_clock::now();
+                state->initializeWindow(app->window, app->activity->assetManager);
             }
             break;
         case APP_CMD_TERM_WINDOW:
-            if (state) state->renderer.shutdown();
+            if (state) {
+                state->splashVideo.stop();
+                state->playingSplashVideo = false;
+                state->renderer.shutdown();
+                state->rendererInitialized = false;
+                state->initialized = false;
+                state->window = nullptr;
+            }
             break;
         case APP_CMD_WINDOW_RESIZED:
-            if (state && state->initialized) state->renderer.resize(app->window);
+            if (state && state->initialized && state->rendererInitialized) {
+                state->renderer.resize(app->window);
+            }
             break;
         default:
             break;
@@ -398,6 +586,7 @@ int32_t onInputEvent(android_app* app, AInputEvent* event) {
     auto* state = reinterpret_cast<AppState*>(app->userData);
     if (AInputEvent_getType(event) != AINPUT_EVENT_TYPE_MOTION || !state) return 0;
     if (AMotionEvent_getAction(event) == AMOTION_EVENT_ACTION_DOWN) {
+        if (state->showingSplash) return 1;
         state->handleTouch(AMotionEvent_getX(event, 0), AMotionEvent_getY(event, 0));
         return 1;
     }
