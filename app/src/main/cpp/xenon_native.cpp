@@ -18,8 +18,6 @@
 #include <vector>
 #include <unistd.h>
 
-#include "Core/Memory/MemoryManager.hpp"
-
 namespace {
 
 enum class Screen : int { Home, Library, System, Settings };
@@ -45,10 +43,15 @@ struct Renderer {
     GLint colorLocation = -1;
     int width = 0;
     int height = 0;
+    int surfaceWidth = 0;
+    int surfaceHeight = 0;
 
     bool initialize(ANativeWindow* window) {
         display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-        eglInitialize(display, nullptr, nullptr);
+        if (display == EGL_NO_DISPLAY || eglInitialize(display, nullptr, nullptr) != EGL_TRUE) {
+            shutdown();
+            return false;
+        }
 
         EGLConfig config;
         EGLint count = 0;
@@ -59,14 +62,23 @@ struct Renderer {
             EGL_NONE
         };
         eglChooseConfig(display, attrs, &config, 1, &count);
-        if (count == 0) return false;
+        if (count == 0) {
+            shutdown();
+            return false;
+        }
 
         surface = eglCreateWindowSurface(display, config, window, nullptr);
         const EGLint contextAttrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
         context = eglCreateContext(display, config, EGL_NO_CONTEXT, contextAttrs);
-        if (eglMakeCurrent(display, surface, surface, context) != EGL_TRUE) return false;
-        eglQuerySurface(display, surface, EGL_WIDTH, &width);
-        eglQuerySurface(display, surface, EGL_HEIGHT, &height);
+        if (surface == EGL_NO_SURFACE || context == EGL_NO_CONTEXT ||
+            eglMakeCurrent(display, surface, surface, context) != EGL_TRUE) {
+            shutdown();
+            return false;
+        }
+        eglQuerySurface(display, surface, EGL_WIDTH, &surfaceWidth);
+        eglQuerySurface(display, surface, EGL_HEIGHT, &surfaceHeight);
+        width = 1280;
+        height = 720;
 
         const char* vertex = R"(precision highp float;
 attribute vec2 position;
@@ -100,7 +112,7 @@ void main() { gl_FragColor = color; })";
         rectLocation = glGetUniformLocation(program, "rect");
         colorLocation = glGetUniformLocation(program, "color");
 
-        glViewport(0, 0, width, height);
+        glViewport(0, 0, surfaceWidth, surfaceHeight);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         return true;
@@ -119,9 +131,9 @@ void main() { gl_FragColor = color; })";
     }
 
     void resize(ANativeWindow* window) {
-        eglQuerySurface(display, surface, EGL_WIDTH, &width);
-        eglQuerySurface(display, surface, EGL_HEIGHT, &height);
-        glViewport(0, 0, width, height);
+        eglQuerySurface(display, surface, EGL_WIDTH, &surfaceWidth);
+        eglQuerySurface(display, surface, EGL_HEIGHT, &surfaceHeight);
+        glViewport(0, 0, surfaceWidth, surfaceHeight);
     }
 
     void rect(float x, float y, float w, float h, const Color& c) {
@@ -138,6 +150,47 @@ void main() { gl_FragColor = color; })";
 
     void roundedRect(float x, float y, float w, float h, const Color& c) {
         rect(x, y, w, h, c);
+    }
+
+    void rotatedRect(float centerX, float centerY, float w, float h, float angle, const Color& c) {
+        const float cosine = std::cos(angle);
+        const float sine = std::sin(angle);
+        const float halfW = w * 0.5f;
+        const float halfH = h * 0.5f;
+        const float corners[] = {
+            -halfW, -halfH, halfW, -halfH,
+            -halfW, halfH, halfW, halfH
+        };
+        float vertices[8];
+        float minX = 0.f;
+        float minY = 0.f;
+        float maxX = 0.f;
+        float maxY = 0.f;
+        for (int i = 0; i < 4; ++i) {
+            const float x = corners[i * 2] * cosine - corners[i * 2 + 1] * sine;
+            const float y = corners[i * 2] * sine + corners[i * 2 + 1] * cosine;
+            vertices[i * 2] = x;
+            vertices[i * 2 + 1] = y;
+            minX = std::min(minX, x);
+            minY = std::min(minY, y);
+            maxX = std::max(maxX, x);
+            maxY = std::max(maxY, y);
+        }
+
+        const float boundsW = maxX - minX;
+        const float boundsH = maxY - minY;
+        for (int i = 0; i < 4; ++i) {
+            vertices[i * 2] = (vertices[i * 2] - minX) / boundsW;
+            vertices[i * 2 + 1] = (vertices[i * 2 + 1] - minY) / boundsH;
+        }
+
+        glUseProgram(program);
+        glUniform2f(resolution, static_cast<float>(width), static_cast<float>(height));
+        glUniform4f(rectLocation, centerX + minX, centerY + minY, boundsW, boundsH);
+        glUniform4f(colorLocation, c.r, c.g, c.b, c.a);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+        glEnableVertexAttribArray(0);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 
     void text(const std::string& value, float x, float y, float scale, const Color& c) {
@@ -203,6 +256,14 @@ void main() { gl_FragColor = color; })";
     }
 
     void present() { eglSwapBuffers(display, surface); }
+
+    float logicalX(float x) const {
+        return surfaceWidth > 0 ? x * width / static_cast<float>(surfaceWidth) : x;
+    }
+
+    float logicalY(float y) const {
+        return surfaceHeight > 0 ? y * height / static_cast<float>(surfaceHeight) : y;
+    }
 };
 
 struct SplashVideo {
@@ -344,25 +405,14 @@ struct AppState {
     bool rendererInitialized = false;
     bool showingSplash = true;
     bool playingSplashVideo = false;
-    bool memoryInitialized = false;
     ANativeWindow* window = nullptr;
     AAssetManager* assetManager = nullptr;
     std::chrono::steady_clock::time_point splashStarted;
-    xboxemu::memory::MemoryManager memory;
-
-    void initialize() {
-        if (memoryInitialized) return;
-        xboxemu::memory::MemoryManager::Config config;
-        config.ram_size = 512u * 1024u * 1024u;
-        memory.initialize(config);
-        memoryInitialized = true;
-    }
 
     void initializeWindow(ANativeWindow* newWindow, AAssetManager* assets) {
         window = newWindow;
         assetManager = assets;
         initialized = true;
-        initialize();
         splashStarted = std::chrono::steady_clock::now();
 
         renderer.shutdown();
@@ -495,13 +545,12 @@ struct AppState {
                                  i == 1 ? kGreen : kPanel2);
         }
 
-        renderer.roundedRect(cx - 64.f, h * .38f - 64.f, 128.f, 128.f, kPanel);
-        renderer.roundedRect(cx - 50.f, h * .38f - 50.f, 100.f, 100.f, kGreen);
-        renderer.roundedRect(cx - 36.f, h * .38f - 36.f, 72.f, 72.f, kBg);
-
-        renderer.rect(cx - 42.f, h * .38f - 14.f, 84.f, 12.f, kText);
-        renderer.rect(cx - 42.f, h * .38f - 14.f, 12.f, 54.f, kText);
-        renderer.rect(cx + 30.f, h * .38f - 14.f, 12.f, 54.f, kText);
+        const float logoY = h * .38f;
+        renderer.roundedRect(cx - 64.f, logoY - 64.f, 128.f, 128.f, kPanel);
+        renderer.roundedRect(cx - 48.f, logoY - 48.f, 96.f, 96.f, kPanel2);
+        renderer.rotatedRect(cx, logoY, 76.f, 13.f, 0.785398f, kGreen);
+        renderer.rotatedRect(cx, logoY, 76.f, 13.f, -0.785398f, kGreen);
+        renderer.rotatedRect(cx, logoY, 14.f, 14.f, 0.785398f, kText);
 
         renderer.text("XENON", cx - 58.f, h * .58f, 8, kText);
         renderer.text("EXPERIMENTAL EMULATOR", cx - 108.f, h * .58f + 58.f, 3, kMuted);
@@ -587,7 +636,9 @@ int32_t onInputEvent(android_app* app, AInputEvent* event) {
     if (AInputEvent_getType(event) != AINPUT_EVENT_TYPE_MOTION || !state) return 0;
     if (AMotionEvent_getAction(event) == AMOTION_EVENT_ACTION_DOWN) {
         if (state->showingSplash) return 1;
-        state->handleTouch(AMotionEvent_getX(event, 0), AMotionEvent_getY(event, 0));
+        state->handleTouch(
+            state->renderer.logicalX(AMotionEvent_getX(event, 0)),
+            state->renderer.logicalY(AMotionEvent_getY(event, 0)));
         return 1;
     }
     return 0;
