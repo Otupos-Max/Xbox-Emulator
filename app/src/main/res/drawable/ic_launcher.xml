@@ -1,22 +1,69 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+
+    <!-- Halo externo -->
     <path
-        android:fillColor="#101820"
-        android:pathData="M24,0H84A24,24 0 0,1 108,24V84A24,24 0 0,1 84,108H24A24,24 0 0,1 0,84V24A24,24 0 0,1 24,0Z"/>
+        android:strokeColor="#22C55E"
+        android:strokeWidth="0.8"
+        android:strokeAlpha="0.4"
+        android:fillColor="#00000000"
+        android:pathData="M54,54m-42,0a42,42 0,1 1,84 0a42,42 0,1 1,-84 0"/>
+
+    <!-- Barra 1 do X (topo-esquerdo → base-direita) -->
     <path
-        android:fillColor="#75D69B"
-        android:pathData="M54,12A42,42 0 1,1 54,96A42,42 0 1,1 54,12Z"/>
+        android:strokeWidth="10"
+        android:strokeLineCap="round"
+        android:pathData="M30,30 L78,78">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="30" android:startY="30"
+                android:endX="78"   android:endY="78"
+                android:startColor="#4ADE80"
+                android:endColor="#0E7A3B"/>
+        </aapt:attr>
+    </path>
+
+    <!-- Barra 2 do X (topo-direito → base-esquerda) -->
     <path
-        android:fillColor="#101820"
-        android:pathData="M54,22A32,32 0 1,1 54,86A32,32 0 1,1 54,22Z"/>
+        android:strokeWidth="10"
+        android:strokeLineCap="round"
+        android:pathData="M78,30 L30,78">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="78" android:startY="30"
+                android:endX="30"   android:endY="78"
+                android:startColor="#4ADE80"
+                android:endColor="#0E7A3B"/>
+        </aapt:attr>
+    </path>
+
+    <!-- Disco escuro que isola o chip do X -->
     <path
-        android:fillColor="#75D69B"
-        android:pathData="M29,31L46,54L29,77H40L54,60L68,77H79L62,54L79,31H68L54,48L40,31Z"/>
+        android:fillColor="#0B1210"
+        android:pathData="M54,54m-11,0a11,11 0,1 1,22 0a11,11 0,1 1,-22 0"/>
+
+    <!-- Anel do chip -->
     <path
-        android:fillColor="#DDF9E8"
-        android:pathData="M49,54L54,48L59,54L54,60Z"/>
+        android:strokeColor="#22C55E"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000"
+        android:pathData="M54,54m-9,0a9,9 0,1 1,18 0a9,9 0,1 1,-18 0"/>
+
+    <!-- Pinos do chip -->
+    <path android:fillColor="#22C55E" android:pathData="M53,44 h2 v2 h-2 z"/>
+    <path android:fillColor="#22C55E" android:pathData="M53,62 h2 v2 h-2 z"/>
+    <path android:fillColor="#22C55E" android:pathData="M44,53 h2 v2 h-2 z"/>
+    <path android:fillColor="#22C55E" android:pathData="M62,53 h2 v2 h-2 z"/>
+
+    <!-- Núcleo luminoso -->
+    <path
+        android:fillColor="#BBF7D0"
+        android:pathData="M54,54m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0"/>
 </vector>
