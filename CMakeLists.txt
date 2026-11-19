@@ -46,7 +46,7 @@ endif()
 # Módulos
 # ---------------------------------------------------------------------------
 # Adicione aqui à medida que os módulos forem criados:
-# add_subdirectory(Core)
+ add_subdirectory(Core)
 
 # ---------------------------------------------------------------------------
 # Testes
