@@ -38,6 +38,7 @@ struct Renderer {
     EGLSurface surface = EGL_NO_SURFACE;
     EGLContext context = EGL_NO_CONTEXT;
     GLuint program = 0;
+    GLuint vertexBuffer = 0;
     GLint resolution = -1;
     GLint rectLocation = -1;
     GLint colorLocation = -1;
@@ -97,20 +98,54 @@ void main() { gl_FragColor = color; })";
             GLuint shader = glCreateShader(type);
             glShaderSource(shader, 1, &source, nullptr);
             glCompileShader(shader);
+            GLint compiled = GL_FALSE;
+            glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+            if (compiled != GL_TRUE) {
+                char log[512] = {};
+                glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
+                __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Shader compilation failed: %s", log);
+                glDeleteShader(shader);
+                return static_cast<GLuint>(0);
+            }
             return shader;
         };
         GLuint vs = compile(GL_VERTEX_SHADER, vertex);
         GLuint fs = compile(GL_FRAGMENT_SHADER, fragment);
+        if (vs == 0 || fs == 0) {
+            if (vs != 0) glDeleteShader(vs);
+            if (fs != 0) glDeleteShader(fs);
+            shutdown();
+            return false;
+        }
         program = glCreateProgram();
         glAttachShader(program, vs);
         glAttachShader(program, fs);
         glBindAttribLocation(program, 0, "position");
         glLinkProgram(program);
+        GLint linked = GL_FALSE;
+        glGetProgramiv(program, GL_LINK_STATUS, &linked);
         glDeleteShader(vs);
         glDeleteShader(fs);
+        if (linked != GL_TRUE) {
+            char log[512] = {};
+            glGetProgramInfoLog(program, sizeof(log), nullptr, log);
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Program linking failed: %s", log);
+            glDeleteProgram(program);
+            program = 0;
+            shutdown();
+            return false;
+        }
         resolution = glGetUniformLocation(program, "resolution");
         rectLocation = glGetUniformLocation(program, "rect");
         colorLocation = glGetUniformLocation(program, "color");
+        glGenBuffers(1, &vertexBuffer);
+        if (vertexBuffer == 0) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to create the renderer vertex buffer");
+            shutdown();
+            return false;
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 8, nullptr, GL_STREAM_DRAW);
 
         glViewport(0, 0, surfaceWidth, surfaceHeight);
         glEnable(GL_BLEND);
@@ -120,6 +155,11 @@ void main() { gl_FragColor = color; })";
 
     void shutdown() {
         if (display != EGL_NO_DISPLAY) {
+            if (context != EGL_NO_CONTEXT &&
+                eglMakeCurrent(display, surface, surface, context) == EGL_TRUE) {
+                if (vertexBuffer != 0) glDeleteBuffers(1, &vertexBuffer);
+                if (program != 0) glDeleteProgram(program);
+            }
             eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             if (context != EGL_NO_CONTEXT) eglDestroyContext(display, context);
             if (surface != EGL_NO_SURFACE) eglDestroySurface(display, surface);
@@ -128,6 +168,8 @@ void main() { gl_FragColor = color; })";
         display = EGL_NO_DISPLAY;
         surface = EGL_NO_SURFACE;
         context = EGL_NO_CONTEXT;
+        program = 0;
+        vertexBuffer = 0;
     }
 
     void resize(ANativeWindow* window) {
@@ -143,7 +185,9 @@ void main() { gl_FragColor = color; })";
         glUniform4f(colorLocation, c.r, c.g, c.b, c.a);
 
         static const float vertices[] = {0,0, 1,0, 0,1, 1,1};
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+        glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
         glEnableVertexAttribArray(0);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
@@ -188,7 +232,9 @@ void main() { gl_FragColor = color; })";
         glUniform2f(resolution, static_cast<float>(width), static_cast<float>(height));
         glUniform4f(rectLocation, centerX + minX, centerY + minY, boundsW, boundsH);
         glUniform4f(colorLocation, c.r, c.g, c.b, c.a);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+        glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
         glEnableVertexAttribArray(0);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }

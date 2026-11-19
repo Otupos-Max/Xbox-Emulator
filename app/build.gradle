@@ -45,6 +45,9 @@ android {
     buildTypes {
         release {
             minifyEnabled false
+            // Keep local release installs compatible with debug installs.
+            // This development key must not be used to publish the app.
+            signingConfig signingConfigs.debug
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt")
         }
     }
