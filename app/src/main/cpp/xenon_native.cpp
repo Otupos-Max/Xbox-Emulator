@@ -378,7 +378,6 @@ struct SplashAudio {
             AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
             AAudioStreamBuilder_setSampleRate(builder, sampleRate);
             AAudioStreamBuilder_setChannelCount(builder, channels);
-            AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_GAME);
             if (AAudioStreamBuilder_openStream(builder, &stream) != AAUDIO_OK) stream = nullptr;
             AAudioStreamBuilder_delete(builder);
         }
