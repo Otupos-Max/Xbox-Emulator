@@ -69,7 +69,8 @@ public:
     MemoryManager& operator=(const MemoryManager&) = delete;
 
     // Aloca a RAM e zera. Retorna false se ram_size == 0 ou alloc falhar.
-    bool initialize(const Config& config = {});
+    bool initialize();
+    bool initialize(const Config& config);
     void shutdown();
 
     // ---- Introspecção ------------------------------------------------------

@@ -87,6 +87,10 @@ void MMIOHandler::write64(uint32_t offset, uint64_t value) {
 MemoryManager::MemoryManager() = default;
 MemoryManager::~MemoryManager() = default;
 
+bool MemoryManager::initialize() {
+    return initialize(Config());
+}
+
 bool MemoryManager::initialize(const Config& config) {
     config_   = config;
     ram_size_ = config.ram_size;
