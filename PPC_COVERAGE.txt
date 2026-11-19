@@ -1,0 +1,589 @@
+================================================================================
+XBOX EMULATOR — COBERTURA DO INTERPRETADOR POWERPC
+Versão: 0.1
+Última atualização: [DATA]
+================================================================================
+
+Inventário de instruções PowerPC que o interpretador precisa emular para
+executar: (a) testes unitários, (b) hello world homebrew, (c) jogos
+comerciais. Prioridades:
+
+  [T] Testes — necessária para validar o interpretador em si.
+  [H] Hello world — necessária para o primeiro XEX homebrew.
+  [G] Jogo comercial — necessária para jogos reais.
+
+Status:
+  [ ] Não implementada
+  [~] Stub (decodifica, não executa corretamente)
+  [P] Parcial (executa casos simples, não todos os edge cases)
+  [X] Completa (passa testes de referência)
+  [V] Validada (passa testes cruzados com hardware real ou referência)
+
+
+================================================================================
+1. ARITMÉTICA INTEIRA (GPR, 64 bits)
+================================================================================
+
+Mnemônico    | Prioridade | Status | Notas
+-------------|------------|--------|-----------------------------------------
+add          | T H G      | [ ]    | Add sem carry
+add.         | T H G      | [ ]    | Com update de CR0
+addo         | G          | [ ]    | Com overflow
+addi         | T H G      | [ ]    | Imediato
+addis        | T H G      | [ ]    | Imediato shifted 16
+addic        | G          | [ ]    | Com carry
+addic.       | G          | [ ]    | Com carry e CR0
+adde         | G          | [ ]    | Extended (com XER[CA])
+adde.        | G          | [ ]    | Extended com CR0
+addme        | G          | [ ]    | Add minus one extended
+addme.       | G          | [ ]    |
+addze        | G          | [ ]    | Add zero extended
+addze.       | G          | [ ]    |
+subf         | T H G      | [ ]    | Subtract from
+subf.        | G          | [ ]    |
+subfc        | G          | [ ]    | Com carry
+subfc.       | G          | [ ]    |
+subfe        | G          | [ ]    | Extended
+subfe.       | G          | [ ]    |
+subfic       | G          | [ ]    | Imediato
+subfme       | G          | [ ]    |
+subfze       | G          | [ ]    |
+mulhw        | G          | [ ]    | High word (signed)
+mulhwu       | G          | [ ]    | High word (unsigned)
+mullw        | T H G      | [ ]    | Low word
+mulli        | G          | [ ]    | Imediato
+mulld        | G          | [ ]    | 64-bit (PPC64)
+mulli        | G          | [ ]    |
+divw         | T H G      | [ ]    | Divide word (signed)
+divwu        | G          | [ ]    | Divide word (unsigned)
+divd         | G          | [ ]    | 64-bit signed
+divdu        | G          | [ ]    | 64-bit unsigned
+neg          | G          | [ ]    | Negate
+neg.         | G          | [ ]    |
+nego         | G          | [ ]    |
+
+Obs: Xenon é PPC64 (64 bits), então instruções 64-bit (mulld, divd, sld,
+etc.) são necessárias mesmo que a maioria do código seja 32-bit.
+
+
+================================================================================
+2. COMPARAÇÃO INTEIRA
+================================================================================
+
+cmp          | T H G      | [ ]    | Compare signed
+cmpi         | T H G      | [ ]    | Imediato
+cmpl         | G          | [ ]    | Logical unsigned
+cmpli        | G          | [ ]    | Imediato unsigned
+cmpw         | T H G      | [ ]    | Alias de cmp (word)
+cmpwi        | T H G      | [ ]    | Alias de cmpi
+cmplw        | G          | [ ]    | Alias de cmpl
+cmplwi       | G          | [ ]    | Alias de cmpli
+cmpd         | G          | [ ]    | 64-bit signed
+cmpdi        | G          | [ ]    |
+cmpld        | G          | [ ]    | 64-bit unsigned
+cmpldi       | G          | [ ]    |
+
+
+================================================================================
+3. LÓGICA INTEIRA
+================================================================================
+
+and          | T H G      | [ ]    |
+and.         | G          | [ ]    |
+andc         | G          | [ ]    | AND com complemento
+andc.        | G          | [ ]    |
+andi.        | T H G      | [ ]    | Imediato, sempre atualiza CR0
+andis.       | G          | [ ]    | Imediato shifted
+or           | T H G      | [ ]    |
+or.          | G          | [ ]    |
+orc          | G          | [ ]    |
+orc.         | G          | [ ]    |
+ori          | T H G      | [ ]    | Imediato
+oris         | G          | [ ]    | Imediato shifted
+xor          | T H G      | [ ]    |
+xor.         | G          | [ ]    |
+xori         | T H G      | [ ]    |
+xoris        | G          | [ ]    |
+nand         | G          | [ ]    |
+nand.        | G          | [ ]    |
+nor          | G          | [ ]    |
+nor.         | G          | [ ]    |
+eqv          | G          | [ ]    |
+eqv.         | G          | [ ]    |
+extsb        | G          | [ ]    | Extend sign byte
+extsb.       | G          | [ ]    |
+extsh        | G          | [ ]    | Extend sign halfword
+extsh.       | G          | [ ]    |
+extsw        | G          | [ ]    | Extend sign word (PPC64)
+extsw.       | G          | [ ]    |
+cntlzw       | G          | [ ]    | Count leading zeros
+cntlzw.      | G          | [ ]    |
+cntlzd       | G          | [ ]    | 64-bit
+cntlzd.      | G          | [ ]    |
+popcntb      | G          | [ ]    | (opcional, PPC 2.03+)
+prtyd        | G          | [ ]    | (opcional)
+
+
+================================================================================
+4. ROTAÇÃO E DESLOCAMENTO
+================================================================================
+
+rlwimi       | T H G      | [ ]    | Rotate left word immediate then mask insert
+rlwimi.      | G          | [ ]    |
+rlwinm       | T H G      | [ ]    | Muito usado pelo compilador
+rlwinm.      | G          | [ ]    |
+rlwnm        | G          | [ ]    |
+rlwnm.       | G          | [ ]    |
+rldicl       | G          | [ ]    | PPC64
+rldicl.      | G          | [ ]    |
+rldicr       | G          | [ ]    |
+rldicr.      | G          | [ ]    |
+rldic        | G          | [ ]    |
+rldic.       | G          | [ ]    |
+rldimi       | G          | [ ]    |
+rldimi.      | G          | [ ]    |
+rldcl        | G          | [ ]    |
+rldcr        | G          | [ ]    |
+slw          | T H G      | [ ]    |
+slw.         | G          | [ ]    |
+srw          | T H G      | [ ]    |
+srw.         | G          | [ ]    |
+sraw         | G          | [ ]    | Shift right algebraic
+sraw.        | G          | [ ]    |
+srawi        | G          | [ ]    | Imediato
+srawi.       | G          | [ ]    |
+sld          | G          | [ ]    | PPC64
+srd          | G          | [ ]    |
+srad         | G          | [ ]    |
+sradi        | G          | [ ]    |
+
+Obs: rlwinm e rlwimi são as instruções mais usadas em código compilado
+PowerPC. Prioridade absoluta em [T H G].
+
+
+================================================================================
+5. CARREGAMENTO (LOAD)
+================================================================================
+
+lwz          | T H G      | [ ]    | Load word and zero
+lwzu         | G          | [ ]    | Com update
+lwzx         | T H G      | [ ]    | Indexed
+lwzux        | G          | [ ]    |
+lbz          | T H G      | [ ]    | Load byte and zero
+lbzu         | G          | [ ]    |
+lbzx         | T H G      | [ ]    |
+lbzux        | G          | [ ]    |
+lhz          | T H G      | [ ]    | Load halfword and zero
+lhzu         | G          | [ ]    |
+lhzx         | T H G      | [ ]    |
+lhzux        | G          | [ ]    |
+lha          | G          | [ ]    | Load halfword algebraic
+lhau         | G          | [ ]    |
+lhax         | G          | [ ]    |
+lhaux        | G          | [ ]    |
+lmw          | G          | [ ]    | Load multiple word
+ld           | G          | [ ]    | PPC64
+ldu          | G          | [ ]    |
+ldx          | G          | [ ]    |
+ldux         | G          | [ ]    |
+lwa          | G          | [ ]    | Load word algebraic (PPC64)
+lwax         | G          | [ ]    |
+lwaux        | G          | [ ]    |
+
+
+================================================================================
+6. ARMAZENAMENTO (STORE)
+================================================================================
+
+stw          | T H G      | [ ]    |
+stwu         | G          | [ ]    |
+stwx         | T H G      | [ ]    |
+stwux        | G          | [ ]    |
+stb          | T H G      | [ ]    |
+stbu         | G          | [ ]    |
+stbx         | T H G      | [ ]    |
+stbux        | G          | [ ]    |
+sth          | T H G      | [ ]    |
+sthu         | G          | [ ]    |
+sthx         | T H G      | [ ]    |
+sthux        | G          | [ ]    |
+stmw         | G          | [ ]    |
+std          | G          | [ ]    | PPC64
+stdu         | G          | [ ]    |
+stdx         | G          | [ ]    |
+stdux        | G          | [ ]    |
+
+
+================================================================================
+7. CONTROLE DE FLUXO
+================================================================================
+
+b            | T H G      | [ ]    | Branch incondicional
+ba           | G          | [ ]    | Absolute
+bl           | T H G      | [ ]    | Branch and link (call)
+bla          | G          | [ ]    | Absolute + link
+bc           | T H G      | [ ]    | Branch condicional
+bca          | G          | [ ]    |
+bcl          | G          | [ ]    | Com link
+bcla         | G          | [ ]    |
+bclr         | T H G      | [ ]    | Branch to LR
+bclrl        | G          | [ ]    |
+bcctr        | T H G      | [ ]    | Branch to CTR
+bcctrl       | G          | [ ]    |
+beq          | T H G      | [ ]    | Alias (bc com BO/BI)
+bne          | T H G      | [ ]    |
+blt          | T H G      | [ ]    |
+bgt          | T H G      | [ ]    |
+ble          | T H G      | [ ]    |
+bge          | T H G      | [ ]    |
+bso          | G          | [ ]    | Summary overflow
+bns          | G          | [ ]    | No summary overflow
+bdnz         | T H G      | [ ]    | Decrement CTR, branch if != 0
+bdz          | T H G      | [ ]    |
+bdnzl        | G          | [ ]    |
+bdzl         | G          | [ ]    |
+blr          | T H G      | [ ]    | Return (alias de bclr)
+bctr         | T H G      | [ ]    | (alias de bcctr)
+
+
+================================================================================
+8. REGISTRADORES ESPECIAIS (SPR)
+================================================================================
+
+mfspr        | T H G      | [ ]    | Move from SPR
+mtspr        | T H G      | [ ]    | Move to SPR
+mflr         | T H G      | [ ]    | LR (SPR 8)
+mtlr         | T H G      | [ ]    |
+mfctr        | T H G      | [ ]    | CTR (SPR 9)
+mtctr        | T H G      | [ ]    |
+mfxer        | T H G      | [ ]    | XER (SPR 1)
+mtxer        | G          | [ ]    |
+mfcr         | T H G      | [ ]    | Condition register (CR)
+mtcr         | G          | [ ]    |
+mtcrf        | G          | [ ]    | Move to CR field
+mfmsr        | G          | [ ]    | Machine state register
+mtmsr        | G          | [ ]    |
+mftb         | T H G      | [ ]    | Time base
+mftbu        | G          | [ ]    | Time base upper
+mfsr         | G          | [ ]    | Segment register (opcional)
+mtsr         | G          | [ ]    |
+mfsrin       | G          | [ ]    |
+
+
+================================================================================
+9. SISTEMA
+================================================================================
+
+sc           | H G        | [ ]    | System call
+rfi          | G          | [ ]    | Return from interrupt
+sync         | G          | [ ]    | Memory barrier
+isync        | G          | [ ]    | Instruction barrier
+eieio        | G          | [ ]    | Enforce in-order execution
+trap         | G          | [ ]    | Trap
+tw           | G          | [ ]    | Trap word
+twi          | G          | [ ]    | Trap immediate
+td           | G          | [ ]    | Trap doubleword
+tdi          | G          | [ ]    |
+
+Obs: sc é a base de todo syscall. Sem ela, nenhum jogo comercial nem
+homebrew chama o kernel. Prioridade máxima em [H G].
+
+
+================================================================================
+10. PONTO FLUTUANTE (FPR, 64 bits, dupla precisão)
+================================================================================
+
+fadd         | T H G      | [ ]    |
+fadds        | T H G      | [ ]    | Single precision
+fadd.        | G          | [ ]    |
+fadds.       | G          | [ ]    |
+fsub         | T H G      | [ ]    |
+fsubs        | T H G      | [ ]    |
+fsub.        | G          | [ ]    |
+fsubs.       | G          | [ ]    |
+fmul         | T H G      | [ ]    |
+fmuls        | T H G      | [ ]    |
+fmul.        | G          | [ ]    |
+fmuls.       | G          | [ ]    |
+fdiv         | T H G      | [ ]    |
+fdivs        | T H G      | [ ]    |
+fdiv.        | G          | [ ]    |
+fdivs.       | G          | [ ]    |
+fmadd        | T H G      | [ ]    | a*b+c
+fmadds       | T H G      | [ ]    |
+fmsub        | G          | [ ]    | a*b-c
+fmsubs       | G          | [ ]    |
+fnmadd       | G          | [ ]    | -(a*b+c)
+fnmadds      | G          | [ ]    |
+fnmsub       | G          | [ ]    |
+fnmsubs      | G          | [ ]    |
+fsqrt        | G          | [ ]    |
+fsqrts       | G          | [ ]    |
+frsp         | T H G      | [ ]    | Round to single
+fctiw        | G          | [ ]    | Convert to integer word
+fctiwz       | G          | [ ]    | Com round to zero
+fctid        | G          | [ ]    | Convert to int doubleword
+fctidz       | G          | [ ]    |
+fcfid        | G          | [ ]    | Convert from int doubleword
+fcmpu        | T H G      | [ ]    | Compare unordered
+fcmpo        | G          | [ ]    | Compare ordered
+fres         | G          | [ ]    | Reciprocal estimate
+frsqrte      | G          | [ ]    | Reciprocal sqrt estimate
+fsel         | G          | [ ]    | Select
+mffs         | G          | [ ]    | Move from FPSCR
+mtfsf        | G          | [ ]    | Move to FPSCR field
+mtfsb0       | G          | [ ]    |
+mtfsb1       | G          | [ ]    |
+mtfsfi       | G          | [ ]    |
+
+Loads/stores FP:
+lfs          | T H G      | [ ]    | Load float single
+lfsu         | G          | [ ]    |
+lfsx         | T H G      | [ ]    |
+lfsux        | G          | [ ]    |
+lfd          | T H G      | [ ]    | Load float double
+lfdu         | G          | [ ]    |
+lfdx         | T H G      | [ ]    |
+lfdux        | G          | [ ]    |
+stfs         | T H G      | [ ]    |
+stfsu        | G          | [ ]    |
+stfsx        | T H G      | [ ]    |
+stfsux       | G          | [ ]    |
+stfd         | T H G      | [ ]    |
+stfdu        | G          | [ ]    |
+stfdx        | T H G      | [ ]    |
+stfdux       | G          | [ ]    |
+
+
+================================================================================
+11. VMX / ALTIVEC (128-bit SIMD) — OBRIGATÓRIO PARA JOGOS
+================================================================================
+
+Observação: praticamente TODO código de jogo do 360 usa VMX. Sem isso,
+nenhum jogo comercial executa. É a maior superfície da ISA.
+
+Carregamento/armazenamento vetorial:
+lvx          | T H G      | [ ]    | Load vector indexed
+lvxl         | G          | [ ]    | Com LRU hint
+lvsl         | G          | [ ]    | Load vector shift left
+lvsr         | G          | [ ]    | Load vector shift right
+lvebx        | G          | [ ]    | Load vector element byte
+lvehx        | G          | [ ]    |
+lvewx        | G          | [ ]    |
+stvx         | T H G      | [ ]    |
+stvxl        | G          | [ ]    |
+stvebx       | G          | [ ]    |
+stvehx       | G          | [ ]    |
+stvewx       | G          | [ ]    |
+
+Aritmética vetorial (inteira):
+vaddubm      | T H G      | [ ]    | Add unsigned byte mod
+vadduhm      | G          | [ ]    |
+vadduwm      | G          | [ ]    |
+vaddudm      | G          | [ ]    | 64-bit (PPC 2.03+)
+vsububm      | G          | [ ]    |
+vsubuhm      | G          | [ ]    |
+vsubuwm      | G          | [ ]    |
+vsubudm      | G          | [ ]    |
+vaddcuw      | G          | [ ]    | Add with carry
+vsubcuw      | G          | [ ]    |
+
+Saturação:
+vaddubs      | T H G      | [ ]    | Add unsigned byte saturate
+vadduhs      | G          | [ ]    |
+vadduws      | G          | [ ]    |
+vaddsbs      | G          | [ ]    | Signed saturate
+vaddshs      | G          | [ ]    |
+vaddsws      | G          | [ ]    |
+vsububs      | G          | [ ]    |
+vsubuhs      | G          | [ ]    |
+vsubuws      | G          | [ ]    |
+vsubsbs      | G          | [ ]    |
+vsubshs      | G          | [ ]    |
+vsubsws      | G          | [ ]    |
+vaddss      | G          | [ ]    | (mesmo que vaddsbs, alias)
+
+Lógica vetorial:
+vand         | T H G      | [ ]    |
+vandc        | G          | [ ]    |
+vor          | T H G      | [ ]    |
+vxor         | T H G      | [ ]    |
+vnor         | G          | [ ]    |
+
+Aritmética vetorial (float):
+vaddfp       | T H G      | [ ]    | Add float
+vsubfp       | T H G      | [ ]    |
+vmulfp       | T H G      | [ ]    |
+vmaddfp      | T H G      | [ ]    | (a*b)+c
+vnmaddfp     | G          | [ ]    |
+vmaxfp       | G          | [ ]    |
+vminfp       | G          | [ ]    |
+vrefp        | G          | [ ]    | Reciprocal estimate
+vrsqrtefp    | G          | [ ]    |
+vexptefp     | G          | [ ]    | Exp estimate
+vlogefp      | G          | [ ]    | Log estimate
+vcmpeqfp     | T H G      | [ ]    |
+vcmpgtfp     | T H G      | [ ]    |
+vcmpgefp     | G          | [ ]    |
+vcmpltfp     | G          | [ ]    |
+vcmpequb     | G          | [ ]    |
+vcmpequh     | G          | [ ]    |
+vcmpequw     | G          | [ ]    |
+vcmpgtub     | G          | [ ]    |
+vcmpgtsb     | G          | [ ]    |
+vcmpgtuh     | G          | [ ]    |
+vcmpgtsh     | G          | [ ]    |
+vcmpgtuw     | G          | [ ]    |
+vcmpgtsw     | G          | [ ]    |
+vcmpequb.    | G          | [ ]    |
+vcmpequh.    | G          | [ ]    |
+vcmpequw.    | G          | [ ]    |
+vcmpbfp      | G          | [ ]    | Compare bounds float
+
+Comparação/select (VCMP + CR6):
+vcmpeqfp.    | G          | [ ]    |
+vcmpgtfp.    | G          | [ ]    |
+
+Permutação e shift:
+vperm        | T H G      | [ ]    | Permute bytes
+vsldoi       | T H G      | [ ]    | Shift left double by octet
+vslb         | G          | [ ]    | Shift left bytes
+vslh         | G          | [ ]    |
+vslw         | G          | [ ]    |
+vsld         | G          | [ ]    |
+vsrb         | G          | [ ]    | Shift right bytes
+vsrh         | G          | [ ]    |
+vsrw         | G          | [ ]    |
+vsrd         | G          | [ ]    |
+vsrab        | G          | [ ]    | Shift right algébrico byte
+vsrah        | G          | [ ]    |
+vsraw        | G          | [ ]    |
+vsrad        | G          | [ ]    |
+vslo         | G          | [ ]    | Shift left by octet
+vsro         | G          | [ ]    | Shift right by octet
+
+Splat:
+vspltb       | T H G      | [ ]    | Splat byte
+vsplth       | G          | [ ]    |
+vspltw       | G          | [ ]    |
+vspltisb     | T H G      | [ ]    | Splat immediate byte
+vspltish     | G          | [ ]    |
+vspltisw     | G          | [ ]    |
+
+Merge:
+vmrghb       | T H G      | [ ]    | Merge high byte
+vmrglb       | G          | [ ]    | Merge low byte
+vmrghh       | G          | [ ]    |
+vmrglh       | G          | [ ]    |
+vmrghw       | G          | [ ]    |
+vmrglw       | G          | [ ]    |
+
+Pack/unpack:
+vpkuhum      | T H G      | [ ]    | Pack unsigned halfword
+vpkuwum      | G          | [ ]    |
+vpkuhus      | G          | [ ]    | Com saturação
+vpkuwus      | G          | [ ]    |
+vupkhsb      | G          | [ ]    | Unpack high signed byte
+vupkhsh      | G          | [ ]    |
+vupklsb      | G          | [ ]    |
+vupklsh      | G          | [ ]    |
+vupkhpx      | G          | [ ]    | Unpack pixel
+vupklpx      | G          | [ ]    |
+vpkpx        | G          | [ ]    | Pack pixel
+
+Soma:
+vsum4ubs     | G          | [ ]    | Sum across
+vsum4sbs     | G          | [ ]    |
+vsum4shs     | G          | [ ]    |
+vsum2sws     | G          | [ ]    |
+vsumsws      | G          | [ ]    |
+
+Multiply/divide estimate:
+vmuleub      | G          | [ ]    | Multiply even unsigned byte
+vmuloub      | G          | [ ]    | Multiply odd
+vmulesh      | G          | [ ]    |
+vmulosh      | G          | [ ]    |
+vmuleuw      | G          | [ ]    |
+vmulouw      | G          | [ ]    |
+vmuluwm      | G          | [ ]    | (PPC 2.03+)
+vmhaddshs    | G          | [ ]    | Multiply high and add
+vmhraddshs   | G          | [ ]    |
+vmladduhm    | G          | [ ]    |
+vmsumubm     | G          | [ ]    | Sum of multiply
+vmsummbm     | G          | [ ]    |
+vmsumuhm     | G          | [ ]    |
+vmsumshm     | G          | [ ]    |
+vmsumuhs     | G          | [ ]    |
+vmsumshs     | G          | [ ]    |
+
+VSCR (vector status and control):
+mfvscr       | T H G      | [ ]    | Move from VSCR
+mtvscr       | G          | [ ]    | Move to VSCR
+
+Outros:
+vsel         | G          | [ ]    | Vector select (PPC 2.03+)
+vsl          | G          | [ ]    | Variable shift left
+vsr          | G          | [ ]    |
+lvxl         | G          | [ ]    |
+stvxl        | G          | [ ]    |
+vupkd3d      | G          | [ ]    | Unpack 3D (opcional)
+
+
+================================================================================
+12. ATÔMICOS / RESERVA
+================================================================================
+
+lwarx        | G          | [ ]    | Load word and reserve indexed
+stwcx.       | G          | [ ]    | Store word conditional
+ldarx        | G          | [ ]    | 64-bit
+stdcx.       | G          | [ ]    |
+dcbf         | G          | [ ]    | Data cache block flush
+dcbst        | G          | [ ]    | Data cache block store
+dcbt         | G          | [ ]    | Data cache block touch
+dcbtst       | G          | [ ]    | Touch for store
+dcbz         | G          | [ ]    | Data cache block zero
+dcbzl        | G          | [ ]    | 64-bit
+icbi         | G          | [ ]    | Instruction cache block invalidate
+
+Obs: sem lwarx/stwcx. não há mutex, sem mutex não há threads de jogo.
+Prioridade alta em [G].
+
+
+================================================================================
+13. RESUMO DE PRIORIDADES
+================================================================================
+
+FASE 1 (T) — Testes unitários, antes de qualquer coisa:
+  aritmética básica, lógica, rlwinm/rlwimi, loads/stores básicos,
+  branches básicos, mfspr/mtspr, fadd/fmul básicos.
+
+FASE 2 (H) — Hello world homebrew:
+  tudo de Fase 1 + sc, mtcr/mfcr, mftb, mfspr de LR/CTR,
+  carregamento de vetor (lvx/stvx), vaddubm, vspltisb.
+
+FASE 3 (G) — Jogos comerciais:
+  toda a ISA acima, com prioridade em VMX (seção 11) e atômicos
+  (seção 12).
+
+
+================================================================================
+14. TESTES DE REFERÊNCIA
+================================================================================
+
+Toda instrução deve ter teste unitário na pasta Tests/PPC/ com:
+  - Caso base (valores típicos).
+  - Casos de borda (overflow, underflow, máximo/mínimo, zero).
+  - Casos de CR update (instruções com sufixo ".").
+  - Casos de XER update (overflow, carry).
+
+Testes cruzados com hardware real são ideais mas não obrigatórios para
+todas as instruções — usar QEMU-PPC ou PowerPC emulador de referência
+como oráculo secundário quando possível.
+
+Cobertura-alvo para M1: >90% das instruções com [T] implementadas e
+testadas.
+
+
+================================================================================
+FIM DO DOCUMENTO
+================================================================================
