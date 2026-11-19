@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -132,29 +133,54 @@ void main() { gl_FragColor = color; })";
     }
 
     void text(const std::string& value, float x, float y, float scale, const Color& c) {
-        static const char* font[] = {
-            "001100011100111001100011100111111110","100100001000010000100001000010101100",
-            "111101100100111100010111011111111110","110011000100001011100100001000101011",
-            "111101001101010011100100001000101011","111101001101010011100100001000101011"
+        static const std::string font = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        static const std::vector<std::string> glyphs = {
+            "011101000110101010001010001","1000010000100001111010000100001","11110100011000010000111110","1111010001100001000011111","11111100001110010000111111",
+            "11111100001110010000110000","01110100011000110111110010","1000010000100001111110000100001","1111100100010010010011111","00111000100010001000101110",
+            "10010101011000110000100001","10000100001000010000111111","10001110101100110000100001","10001100011010110010110001","0111010001100011000101110",
+            "11110100011011110000110000","01110100011000110110101111","11110100011011110100110001","0111010000101110000101110","1111100100010010010010010",
+            "10000100001000010000101110","10000100001010001010001000","10000101010101011010100001","10001100010010001000110001","10001100010101001000100010",
+            "11111000100010001000111111","11110110011000010000111111","11110110011011110000111111","0111010001100001000101110","1111100100010010010010010",
+            "11110100011000010000100001","0111010001100011000101110","01110010010100101000111110","1111100100010010010010010","0111010000101110000101110",
+            "11111001000100100100100100","0111010001100011000101110","10000100001000010000111111","11111000100010001000111111","10000101001000101000100001"
         };
-        (void)font;
-        const int glyphWidth = 3;
+        (void)glyphs;
+        const int glyphWidth = 5;
         const int glyphHeight = 5;
         for (char raw : value) {
             char ch = raw;
             if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
-            int index = ch >= 'A' && ch <= 'Z' ? ch - 'A' : -1;
-            if (ch >= '0' && ch <= '9') index = 26 + ch - '0';
+            int index = static_cast<int>(font.find(ch));
+            if (ch == '.') index = -2;
+            if (ch == '/') index = -3;
+            if (ch == '-') index = -4;
+            if (ch == ':') index = -5;
             for (int row = 0; row < glyphHeight; ++row) {
                 for (int col = 0; col < glyphWidth; ++col) {
                     bool on = false;
                     if (index >= 0) {
-                        unsigned seed = static_cast<unsigned>((index + 3) * 104729 + (row + 2) * 53 + col * 17);
-                        on = (seed % 100) > 44;
+                        const std::string patterns[] = {
+                            "0111010001101010100011111","10001110001000110001011111","1111010001100001000011111","1111010001100001000011111","1111110000111001000011111",
+                            "1111110000111001000011000","0111010001101111010010111","1000110001100011111110001","0110010010010010010010110","0001100100010001000100110",
+                            "1001011001100011000010001","1000100010001000100011111","1000111001101011000110001","1000110001101011001110001","0111010001100011000101110",
+                            "1111010001111011000011000","01110100011000110101101111","1111010001111011010011001","0111010000100100010011110","1111100100010001000100100",
+                            "1000110001100011000111110","1000110001101010101010001","1000111010101010101011001","1000110001010101000110001","1000110001010100100010001",
+                            "1111100010001000100011111","1111011001100001000011111","1111011001101111000111111","0111010001100001000101110","1111100100010001000100100",
+                            "1111010001100001000010001","0111010001100011000101110","0111001001010010100011111","1111100100010001000100100","0111010000101110000101110",
+                            "1111100100010001000100100","0111010001100011000101110","1000010000100001000011111","1111100010001000100011111","1000010101010101000110001"
+                        };
+                        on = col < 5 && row < 5 && patterns[index].length() >= (row * 5 + col) &&
+                             patterns[index][row * 5 + col] == '1';
                     } else if (ch == ' ') {
                         on = false;
-                    } else {
-                        on = (row == 0 || row == glyphHeight - 1 || col == 0 || col == glyphWidth - 1);
+                    } else if (index == -2) {
+                        on = row == 4 && col == 1;
+                    } else if (index == -3) {
+                        on = (row == col);
+                    } else if (index == -4) {
+                        on = row == 2 && col >= 1 && col <= 3;
+                    } else if (index == -5) {
+                        on = (row == 1 || row == 3) && col == 2;
                     }
                     if (on) rect(x + col * scale, y + row * scale, scale * .82f, scale * .82f, c);
                 }
@@ -175,6 +201,8 @@ struct AppState {
     Renderer renderer;
     Screen screen = Screen::Home;
     bool initialized = false;
+    bool showingSplash = true;
+    std::chrono::steady_clock::time_point splashStarted;
     xboxemu::memory::MemoryManager memory;
 
     void initialize() {
@@ -280,8 +308,49 @@ struct AppState {
         }
     }
 
+    void drawSplash() {
+        auto elapsed = std::chrono::duration<float>(
+            std::chrono::steady_clock::now() - splashStarted).count();
+        if (elapsed >= 2.7f) {
+            showingSplash = false;
+            return;
+        }
+
+        float w = static_cast<float>(renderer.width);
+        float h = static_cast<float>(renderer.height);
+        float cx = w * .5f;
+
+        for (int i = 0; i < 3; ++i) {
+            float inset = 54.f - i * 16.f;
+            renderer.roundedRect(cx - 110.f + inset * .28f, h * .34f - 38.f + i * 14.f,
+                                 220.f - inset * .56f, 5.f,
+                                 i == 1 ? kGreen : kPanel2);
+        }
+
+        renderer.roundedRect(cx - 64.f, h * .38f - 64.f, 128.f, 128.f, kPanel);
+        renderer.roundedRect(cx - 50.f, h * .38f - 50.f, 100.f, 100.f, kGreen);
+        renderer.roundedRect(cx - 36.f, h * .38f - 36.f, 72.f, 72.f, kBg);
+
+        renderer.rect(cx - 42.f, h * .38f - 14.f, 84.f, 12.f, kText);
+        renderer.rect(cx - 42.f, h * .38f - 14.f, 12.f, 54.f, kText);
+        renderer.rect(cx + 30.f, h * .38f - 14.f, 12.f, 54.f, kText);
+
+        renderer.text("XENON", cx - 58.f, h * .58f, 8, kText);
+        renderer.text("EXPERIMENTAL EMULATOR", cx - 108.f, h * .58f + 58.f, 3, kMuted);
+
+        float barW = w * .55f;
+        float progress = std::clamp(elapsed / 2.7f, 0.f, 1.f);
+        renderer.roundedRect(cx - barW * .5f, h * .78f, barW, 6.f, kPanel2);
+        renderer.roundedRect(cx - barW * .5f, h * .78f, barW * progress, 6.f, kGreen);
+    }
+
     void draw() {
         renderer.begin();
+        if (showingSplash) {
+            drawSplash();
+            renderer.present();
+            return;
+        }
         switch (screen) {
             case Screen::Home: drawHome(); break;
             case Screen::Library: drawLibrary(); break;
@@ -311,6 +380,7 @@ void onAppCmd(android_app* app, int32_t cmd) {
             if (app->window && state) {
                 state->initialized = state->renderer.initialize(app->window);
                 state->initialize();
+                state->splashStarted = std::chrono::steady_clock::now();
             }
             break;
         case APP_CMD_TERM_WINDOW:
