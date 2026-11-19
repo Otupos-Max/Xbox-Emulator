@@ -515,6 +515,10 @@ Compilar em uma máquina Android configurada:
 
 O APK será gerado em app/build/outputs/apk/debug/app-debug.apk.
 
+O GitHub Actions também gera o APK automaticamente em pushes e pull requests
+para `main`/`master`, além de permitir uma execução manual pela opção
+“Run workflow”. O arquivo pode ser baixado na seção Artifacts da execução.
+
 
 ================================================================================
 COMO CONTRIBUIR
