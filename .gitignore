@@ -32,6 +32,7 @@ Makefile
 /Android/.externalNativeBuild/
 /Android/app/.cxx/
 /app/.cxx/
+/app/build/
 
 # --------------------------------------------------------------------------
 # CLion / VSCode / editor
