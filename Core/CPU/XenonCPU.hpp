@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include "PowerPC/PPCInterpreter.hpp"
 
 class XenonCPU {
 public:
@@ -9,11 +10,7 @@ public:
     static constexpr int THREADS_PER_CORE = 2;
 
     struct Core {
-        uint64_t gpr[32]{};
-        uint64_t pc = 0;
-        uint64_t lr = 0;
-        uint64_t ctr = 0;
-        uint32_t cr = 0;
+        PPCInterpreter threads[THREADS_PER_CORE];
         bool running = false;
     };
 
@@ -23,6 +20,9 @@ public:
     void start();
     void stop();
 
+    void executeThread(int coreIndex, int threadIndex,
+                       const PPCInstruction& instruction);
+
     Core& getCore(int index);
     const Core& getCore(int index) const;
 
@@ -30,4 +30,3 @@ private:
     Core cores[CORE_COUNT];
     bool initialized = false;
 };
-
