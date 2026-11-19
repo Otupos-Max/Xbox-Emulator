@@ -23,7 +23,7 @@
 
 namespace {
 
-enum class Screen : int { Home, Library, System, Settings };
+enum class Screen : int { Home, Library, System, Settings, ProfileSelect };
 
 struct Rect { float x, y, w, h; };
 struct Color { float r, g, b, a; };
@@ -590,7 +590,7 @@ struct SplashVideo {
 struct AppState {
     Renderer renderer;
     SplashVideo splashVideo;
-    Screen screen = Screen::Home;
+    Screen screen = Screen::ProfileSelect;
     bool initialized = false;
     bool rendererInitialized = false;
     bool showingSplash = true;
@@ -751,6 +751,104 @@ struct AppState {
         renderer.roundedRect(cx - barW * .5f, h * .78f, barW * progress, 6.f, kGreen);
     }
 
+    // Avatar simples e genérico (boneco em blocos), sem relação com nenhum
+    // personagem real: só pra dar um corpo visual a cada perfil no seletor.
+    void drawAvatarFigure(float cx, float topY, const Color& accent) {
+        float headSize = 40.f;
+        float torsoW = 92.f;
+        float torsoH = 78.f;
+        float legW = 32.f;
+        float legH = 48.f;
+        float legGap = 10.f;
+
+        renderer.roundedRect(cx - headSize * .5f, topY, headSize, headSize, kPanel2);
+        renderer.roundedRect(cx - torsoW * .5f, topY + headSize + 6.f, torsoW, torsoH, kPanel2);
+        renderer.rect(cx - torsoW * .5f + 10.f, topY + headSize + 20.f, torsoW - 20.f, 14.f, accent);
+        renderer.roundedRect(cx - legGap * .5f - legW, topY + headSize + 6.f + torsoH, legW, legH, kMuted);
+        renderer.roundedRect(cx + legGap * .5f, topY + headSize + 6.f + torsoH, legW, legH, kMuted);
+    }
+
+    struct ProfileSlot { const char* name; const char* sub; bool create; Color accent; };
+
+    static const ProfileSlot* profileSlots() {
+        static const ProfileSlot slots[4] = {
+            {"JOGADOR UM", "ONLINE", false, kGreen},
+            {"JOGADOR DOIS", "ONLINE", false, kBlue},
+            {"CRIAR PERFIL", "NOVO PERFIL", true, kPanel2},
+            {"CONVIDADO", "OFFLINE", false, kMuted},
+        };
+        return slots;
+    }
+
+    // Caixa de toque (e posição central) de cada um dos 4 cartões, usada
+    // tanto pro desenho quanto pra detectar o toque.
+    void profileCardLayout(Rect out[4], float cx[4]) const {
+        float w = static_cast<float>(renderer.width);
+        float cardW = std::min(w * .2f, 230.f);
+        float gap = (w - cardW * 4.f) / 5.f;
+        float top = static_cast<float>(renderer.height) * .30f;
+        for (int i = 0; i < 4; ++i) {
+            cx[i] = gap + cardW * .5f + i * (cardW + gap);
+            out[i] = Rect{gap + i * (cardW + gap), top - 20.f, cardW, 260.f};
+        }
+    }
+
+    void drawProfileSelect() {
+        float w = static_cast<float>(renderer.width);
+        float h = static_cast<float>(renderer.height);
+        float margin = std::clamp(w * .06f, 18.f, 42.f);
+
+        renderer.text("ENTRAR OU SAIR", w - margin - 236.f, 30.f, 3.3f, kText);
+        renderer.text("ESCOLHA O SEU PERFIL", w - margin - 236.f, 64.f, 2.5f, kMuted);
+
+        const ProfileSlot* slots = profileSlots();
+        Rect cards[4];
+        float centers[4];
+        profileCardLayout(cards, centers);
+
+        for (int i = 0; i < 4; ++i) {
+            const ProfileSlot& slot = slots[i];
+            float cx = centers[i];
+            float top = cards[i].y + 20.f;
+
+            if (slot.create) {
+                renderer.roundedRect(cx - 46.f, top, 92.f, 92.f, kPanel);
+                renderer.rect(cx - 24.f, top + 42.f, 48.f, 8.f, kMuted);
+                renderer.rect(cx - 4.f, top + 22.f, 8.f, 48.f, kMuted);
+            } else {
+                drawAvatarFigure(cx, top, slot.accent);
+                renderer.roundedRect(cx + 28.f, top, 16.f, 16.f, slot.accent);
+            }
+
+            float nameWidth = static_cast<float>(std::strlen(slot.name)) * 6.f * 2.6f;
+            renderer.text(slot.name, cx - nameWidth * .5f, top + 200.f, 2.6f, kText);
+            float subWidth = static_cast<float>(std::strlen(slot.sub)) * 6.f * 2.1f;
+            renderer.text(slot.sub, cx - subWidth * .5f, top + 230.f, 2.1f, kMuted);
+        }
+
+        float barHeight = std::clamp(h * .09f, 58.f, 82.f);
+        renderer.rect(0, h - barHeight, w, barHeight, kPanel);
+        renderer.text("A SELECIONAR", margin, h - barHeight + 26.f, 2.6f, kText);
+        const char* backLabel = "B VOLTAR";
+        float backWidth = static_cast<float>(std::strlen(backLabel)) * 6.f * 2.6f;
+        renderer.text(backLabel, w - margin - backWidth, h - barHeight + 26.f, 2.6f, kMuted);
+    }
+
+    void handleProfileSelectTouch(float x, float y) {
+        Rect cards[4];
+        float centers[4];
+        profileCardLayout(cards, centers);
+        for (int i = 0; i < 4; ++i) {
+            const Rect& r = cards[i];
+            if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+                // Ainda não há criação/gestão real de perfil: qualquer cartão
+                // (inclusive "Criar Perfil") só abre o dashboard por enquanto.
+                screen = Screen::Home;
+                return;
+            }
+        }
+    }
+
     void draw() {
         if (playingSplashVideo) {
             if (!splashVideo.renderFrame()) {
@@ -776,12 +874,17 @@ struct AppState {
             case Screen::Library: drawLibrary(); break;
             case Screen::System: drawSystem(); break;
             case Screen::Settings: drawSettings(); break;
+            case Screen::ProfileSelect: drawProfileSelect(); break;
         }
-        drawNavigation();
+        if (screen != Screen::ProfileSelect) drawNavigation();
         renderer.present();
     }
 
     void handleTouch(float x, float y) {
+        if (screen == Screen::ProfileSelect) {
+            handleProfileSelectTouch(x, y);
+            return;
+        }
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
         float barHeight = std::clamp(h * .09f, 58.f, 82.f);
