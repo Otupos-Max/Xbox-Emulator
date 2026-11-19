@@ -15,6 +15,10 @@ target_include_directories(native_app_glue PUBLIC ${NATIVE_APP_GLUE_DIR})
 
 add_library(xenon_native SHARED xenon_native.cpp)
 
+# The NDK glue exports ANativeActivity_onCreate from a static library. Without
+# forcing it to be kept, the linker drops it and Android crashes at launch.
+target_link_options(xenon_native PRIVATE "-u" "ANativeActivity_onCreate")
+
 target_include_directories(xenon_native PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${XBOXEMU_ROOT}
