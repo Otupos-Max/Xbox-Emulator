@@ -5,13 +5,12 @@
         android:label="Xenon"
         android:icon="@drawable/ic_launcher"
         android:theme="@android:style/Theme.Light.NoTitleBar.Fullscreen"
-        android:resizeableActivity="false"
+        android:resizeableActivity="true"
         android:hasCode="true">
         <activity
             android:name=".XenonActivity"
             android:exported="true"
             android:screenOrientation="landscape"
-            android:maxAspectRatio="1.7777778"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|screenLayout|smallestScreenSize|navigation"
             android:launchMode="singleTask">
             <meta-data
@@ -22,5 +21,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <meta-data
+            android:name="android.max_aspect"
+            android:value="3.0" />
     </application>
 </manifest>
