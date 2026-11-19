@@ -42,19 +42,26 @@ public class SplashActivity extends Activity implements TextureView.SurfaceTextu
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        Window window = getWindow();
-        window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN
-                | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        hideSystemBars();
+        try {
+            Window window = getWindow();
+            window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN
+                    | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            hideSystemBars();
 
-        FrameLayout root = new FrameLayout(this);
-        TextureView textureView = new TextureView(this);
-        textureView.setSurfaceTextureListener(this);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT);
-        root.addView(textureView, params);
-        setContentView(root);
+            FrameLayout root = new FrameLayout(this);
+            TextureView textureView = new TextureView(this);
+            textureView.setSurfaceTextureListener(this);
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT);
+            root.addView(textureView, params);
+            setContentView(root);
+        } catch (Throwable t) {
+            // Qualquer problema para montar a tela de splash não pode travar
+            // o app: segue direto para o emulador.
+            Log.w(TAG, "Falha ao montar a splash, pulando para o emulador", t);
+            goToEmulator();
+        }
     }
 
     @Override
@@ -89,8 +96,10 @@ public class SplashActivity extends Activity implements TextureView.SurfaceTextu
                 mp.start();
             });
             mediaPlayer.prepareAsync();
-        } catch (IOException e) {
-            Log.w(TAG, "Não foi possível abrir o asset de splash, pulando para o emulador", e);
+        } catch (Throwable t) {
+            // Qualquer erro aqui (asset ausente, codec, URI, o que for) não
+            // pode travar o app: segue direto para o emulador.
+            Log.w(TAG, "Não foi possível tocar o vídeo de splash, pulando para o emulador", t);
             goToEmulator();
         }
     }
@@ -116,7 +125,11 @@ public class SplashActivity extends Activity implements TextureView.SurfaceTextu
             return;
         }
         navigated = true;
-        releasePlayer();
+        try {
+            releasePlayer();
+        } catch (Throwable ignored) {
+            // Não deixa um erro ao liberar o player impedir a navegação.
+        }
         startActivity(new Intent(this, XenonActivity.class));
         finish();
     }
