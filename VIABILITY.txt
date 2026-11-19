@@ -1,0 +1,326 @@
+================================================================================
+XBOX EMULATOR — DOCUMENTO DE VIABILIDADE TÉCNICA
+Versão: 0.1
+Última atualização: [DATA]
+================================================================================
+
+Este documento existe para responder, de forma honesta e verificável, se o
+projeto é viável e sob quais condições. Não é um documento motivacional; é um
+documento de engenharia. Se algo aqui parecer pessimista, é porque a emulação
+de Xbox 360 em ARM64/Android é de fato um dos alvos mais difíceis possíveis
+em emulação de consoles.
+
+
+================================================================================
+1. SUMÁRIO EXECUTIVO
+================================================================================
+
+Veredito: o projeto é VIÁVEL como pesquisa e prova de conceito (Estágio 1).
+É POSSÍVEL, mas com alto risco, como produto experimental (Estágio 2). É
+IMPROVÁVEL a curto prazo para jogos comerciais pesados (Estágio 3).
+
+Existem três riscos críticos, em ordem de severidade:
+
+  R1. Tradução PPC → ARM64 sem JIT confiável no Android (CRÍTICO)
+  R2. Complexidade do Xenos + eDRAM de 10 MB (ALTO)
+  R3. Caminho de boot (kernel stub + XEX loader) subestimado (MÉDIO)
+
+Cada um é analisado nas seções 3, 4 e 5. A seção 6 define o orçamento de
+ciclos. A seção 7 define os marcos go/no-go. A seção 8 é a árvore de decisão
+para o caso de algum risco se materializar.
+
+
+================================================================================
+2. HARDWARE DE REFERÊNCIA
+================================================================================
+
+Xbox 360 (original)
+-------------------
+- CPU Xenon: 3.2 GHz, 3 núcleos PPE, 6 threads SMT, VMX 128-bit.
+  Throughput FP32: ~115 GFLOPS. In-order, pipeline de 21 estágios.
+- GPU Xenos: 500 MHz, 48 ALUs VEC + 16 ALUs escalares, 240 GFLOPS FP32.
+- eDRAM: 10 MB na daughter die, 256 GB/s internos, 192 ALUs de blending.
+- RAM: 512 MB GDDR3 unificada, 22.4 GB/s (CPU), ~22.4 GB/s (GPU externo).
+- L2 CPU: 1 MB compartilhado. L1: 32 KB I + 32 KB D por núcleo.
+
+Dispositivo-alvo mínimo (Estágio 2)
+-----------------------------------
+- Snapdragon 8 Gen 1 / 8 Gen 2 / Dimensity 9200+.
+- 8 GB RAM mínimo (recomendado 12 GB).
+- Android 12+, NDK r26+.
+- Adreno 730+ ou Mali-G715+.
+
+Dispositivo de testes primário (recomendado)
+--------------------------------------------
+- Snapdragon 8 Gen 2 (1× X3 @ 3.2 GHz + 4× A715 + 3× A510, Adreno 740,
+  LPDDR5X ~64 GB/s). É o único SoC Android atual com prime core comparável
+  ao PPE em single-thread.
+
+
+================================================================================
+3. RISCO R1 — TRADUÇÃO PPC → ARM64 (CRÍTICO)
+================================================================================
+
+3.1 O problema
+
+Xenon roda 6 threads a 3.2 GHz. ARM64 Android topo de linha tem 1 prime core
+a ~3.2 GHz + 4 big cores + 3 little cores, com throttling severo em <5 min.
+
+Emular 6 threads PPC em 8 threads ARM deixa ZERO margem para GPU emulada,
+UI, JNI, audio mixer, sistema Android. E o prime core aquece rápido.
+
+3.2 Orçamento por instrução
+
+Cada instrução PPC precisa ser executada em <1 ciclo ARM, em média, para
+haver esperança de desempenho aceitável. Ordem de grandeza:
+
+  - Interpretador puro: 30-100 ciclos ARM por instrução PPC. Inviável para
+    jogos. OK apenas para testes e boot.
+  - JIT de bloco básico simples: 3-10 ciclos por instrução. Viável para
+    homebrew.
+  - JIT com register allocation e otimizações: 1-3 ciclos por instrução.
+    Único caminho para jogos comerciais.
+
+3.3 Restrições do Android moderno
+
+  - W^X: desde Android 10, código gerado em runtime não pode estar em página
+    simultaneamente writable e executable. É preciso mmap(PROT_READ|PROT_WRITE)
+    → escrever → mprotect(PROT_READ|PROT_EXEC). Funciona em geral, mas há
+    restrições por device (alguns OEMs bloqueiam PROT_EXEC em heap).
+  - JIT API nativa (android.os.JitCompiler) existe mas não serve para código
+    arbitrário gerado — é para otimizar o ART.
+  - SELinux enforcing pode bloquear mmap executável em diretórios de app.
+    Testar em múltiplos OEMs é obrigatório.
+  - Sem extensão de virtualização útil para PPC. Não há "VT-x para PPC".
+
+3.4 Estratégia adotada (4 fases)
+
+  F1. Interpretador (atual). Base de validação. Sempre mantido como
+      fallback de instruções não suportadas.
+  F2. Recompilador AOT por bloco básico. Análise estática do XEX no
+      carregamento, tradução para IR, execução da IR. Sem W^X, sem JIT.
+      Ganho: ~5-15x sobre interpretador. Alvo: homebrew, XBLA simples.
+  F3. JIT de bloco básico. Traduz blocos para ARM64 em runtime, com cache
+      de código. Requer contornar W^X. Alvo: primeira leva de jogos
+      comerciais em 480p-720p.
+  F4. JIT otimizado. Perfil + recompilação de hot paths + vetorização NEON
+      para VMX. Alvo: jogos comerciais em 720p+.
+
+3.5 Critérios de go/no-go para R1
+
+  - Go F2: apenas se interpretador passar 90% dos testes unitários PPC.
+  - Go F3: apenas se F2 entregar >10 fps em hello world em Snapdragon 8 Gen 2.
+  - Go F4: apenas se F3 entregar >20 fps em 480p no primeiro jogo comercial
+    e se testes de W^X passarem em pelo menos 4 OEMs.
+
+  - No-go: se F3 falhar em W^X em >50% dos dispositivos testados, o
+    projeto fica limitado a F2 (homebrew/XBLA, resolução baixa). Isso
+    NÃO é fracasso — é o teto real. Documentar publicamente.
+
+
+================================================================================
+4. RISCO R2 — XENOS E eDRAM (ALTO)
+================================================================================
+
+4.1 O problema
+
+Xenos não é uma GPU comum. É uma arquitetura unificada de shaders (antes de
+DirectX 11), com 48 ALUs VEC + 16 ALUs escalares, e — o ponto crítico —
+10 MB de eDRAM na daughter die com 192 ALUs de blending dedicadas e 256 GB/s
+internos.
+
+Nenhuma GPU móvel tem eDRAM equivalente. Adreno/Mali usam tile-based
+rendering com tile memory de poucos MB. A largura de banda de RAM móvel
+(LPDDR5X ~64 GB/s) é 4x menor que a do eDRAM do Xenos (256 GB/s).
+
+4.2 Por que importa
+
+A eDRAM do Xenos permite fazer blending (alpha, MSAA, HDR) sem sair da
+daughter die. Qualquer jogo comercial usa isso extensivamente. Emular via
+RAM móvel significa: (a) bandwidth bottleneck, (b) sem MSAA gratuito,
+(c) sem blend com largura de banda gratuita.
+
+4.3 Estratégia
+
+  E1. Renderização tile-based em Vulkan, com tile memory (framebuffer
+      attachment) residindo em memória rápida do device. Isso replica o
+      modelo da eDRAM em hardware moderno que suporta tile-based nativamente.
+      Adreno e Mali são tile-based — é o caminho natural.
+
+  E2. Deferred rendering para evitar bandwidth excessivo em blends.
+      Blend é feito no tile, resolve no final. Vulkan subpass dependencies
+      são ideais para isso.
+
+  E3. Resolução escalonada como válvula de escape. 480p-720p é o alvo.
+      1080p é inviável no Estágio 2.
+
+  E4. Tradução de comandos Xenos → Vulkan via SPIR-V. Shaders unificados
+      precisam de tradução para pipeline Vulkan (vertex + fragment).
+      É provavelmente a maior peça isolada de código do projeto.
+
+4.4 Critérios de go/no-go para R2
+
+  - Go: se um único jogo homebrew 3D (ex.: demo técnica) renderizar com
+    shaders corretos em Vulkan em 480p.
+  - No-go: se a tradução Xenos → Vulkan não conseguir cobrir blends comuns
+    em <6 meses, o projeto prioriza títulos 2D e XBLA no Estágio 2,
+    adiando 3D pesado indefinidamente. Documentar publicamente.
+
+
+================================================================================
+5. RISCO R3 — CAMINHO DE BOOT (MÉDIO)
+================================================================================
+
+5.1 O problema
+
+Sem kernel stub, XEX loader e FATX, não existe validação real de nada além
+de testes unitários. O README original colocava "carregamento de jogos" como
+etapa 10 — tarde demais. Foi corrigido no roadmap por fases.
+
+5.2 Componentes mínimos para hello world XEX
+
+  M1. Boot stub: simula estado inicial do console (registradores, tabelas,
+      vector de reset). Pula o boot ROM real (que é código proprietário
+      não distribuído).
+  M2. XEX loader: parser do formato XEX (header, compressão LZX, tabela de
+      importação, tabela de página). Sem isso, nada carrega.
+  M3. Memory mapper: mapeamento de endereços virtuais do XEX para memória
+      emulada. MMIO para registradores que o XEX consulta no início.
+  M4. Mínimo de XAM: hello world homebrew consulta APIs mínimas. Sem pelo
+      menos alguns stubs de XAM, o executável crasha.
+  M5. Framebuffer: saída gráfica primitiva para mostrar texto.
+
+5.3 Critério de validação
+
+  Hello world homebrew imprimindo texto em framebuffer. Esse é o M4 da
+  seção 7 e o primeiro marco real do projeto.
+
+
+================================================================================
+6. ORÇAMENTO DE CICLOS E DESEMPENHO
+================================================================================
+
+6.1 CPU
+
+  Xenon total: 3 núcleos × 3.2 GHz × 2 threads = ~19.2 G instruções/s
+  (assumindo IPC ~1 por thread).
+
+  ARM64 Snapdragon 8 Gen 2:
+    - Prime core (X3): ~3.2 GHz, IPC ~2 em workloads mistos, mas throttling
+      agressivo. Sustentado: ~2.0-2.4 GHz em uso contínuo.
+    - Big cores (A715): ~2.8 GHz, IPC ~1.5. Sustentado: ~2.0 GHz.
+    - Little cores (A510): ~2.0 GHz, IPC ~1.0. Sustentado: ~1.6 GHz.
+
+  Throughput agregado realista sustentado: ~8-12 G instruções/s em ARM64.
+
+  Ou seja: o device Android topo de linha tem MENOS throughput sustentado
+  que o Xenon. E precisa rodar o próprio Android em paralelo.
+
+  Conclusão: só um JIT muito eficiente (F3/F4) tem chance. Interpretador
+  puro e AOT (F2) entregam ~10-30% do necessário para jogos comerciais,
+  o que é suficiente para homebrew e XBLA simples.
+
+6.2 Memória
+
+  RAM móvel LPDDR5X: ~64 GB/s no total (compartilhado com GPU).
+  Xbox 360 RAM: 22.4 GB/s (CPU) + ~22.4 GB/s (GPU externo).
+
+  Como device tem 2.8x mais bandwidth que o original, RAM não é gargalo.
+  O gargalo é eDRAM (256 GB/s) — discutido em R2.
+
+6.3 GPU
+
+  Xenos: 240 GFLOPS FP32.
+  Adreno 740: ~1.5 TFLOPS FP32. Mali-G715: ~1.2 TFLOPS FP32.
+
+  GPU móvel tem 5-6x mais raw compute que Xenos. O gargalo é tradução e
+  bandwidth, não compute. Bom sinal.
+
+6.4 Resumo do orçamento
+
+  Recurso              | Xbox 360 | Device Android | Ratio
+  ---------------------|----------|----------------|-------
+  CPU IPC sustentado   | ~19.2 G  | ~8-12 G        | 0.5x
+  RAM bandwidth        | 22.4 GB/s| 64 GB/s        | 2.8x
+  eDRAM bandwidth      | 256 GB/s | ~n/a (tile)    | n/a
+  GPU FP32             | 240 GFLOP| 1.5 TFLOPS     | 6.2x
+
+  CPU é o recurso mais apertado. Confirma R1 como crítico.
+
+
+================================================================================
+7. MARCOS GO/NO-GO
+================================================================================
+
+M0. Estrutura inicial da CPU Xenon (3 núcleos, 2 contextos cada).      [FEITO]
+M1. Interpretador PPC passa >90% dos testes unitários do PPC_COVERAGE.  [  ]
+M2. Memory mapper + MMIO básico funcional.                              [  ]
+M3. XEX loader carrega hello world homebrew sem crashar.                [  ]
+M4. Hello world exibe texto em framebuffer.                             [  ]
+M5. Primeiro jogo comercial (XBLA simples) atinge tela de título.       [  ]
+M6. Primeiro jogo comercial joga em 480p-720p a >20 fps em device      [  ]
+    topo de linha.
+M7. JIT (F3) funcional em ≥4 OEMs sem bloqueio de W^X.                  [  ]
+
+Critérios de abandono de escopo (não do projeto):
+
+  - Se M5 falhar após 18 meses de M1, o projeto declara Estágio 2
+    limitado a homebrew e XBLA.
+  - Se M7 falhar, o projeto declara Estágio 2 limitado a AOT (F2).
+    Jogos comerciais pesados (Halo, GTA V) não são objetivo do projeto
+    em ARM64 — são explicitamente não-objetivo, salvo breakthrough em JIT.
+
+Observação importante: NÃO prometemos rodar Halo 3, GTA V ou Red Dead
+Redemption em Android. Esses títulos são referências de complexidade máxima
+e estão fora do escopo de Estágio 2. O objetivo é progresso documentado,
+não promessas.
+
+
+================================================================================
+8. ÁRVORE DE DECISÃO (SE ALGO FALHAR)
+================================================================================
+
+Se M1 falhar (interpretador não estabiliza):
+  → Revisar arquitetura do PPCDecoder e PPCInterpreter.
+  → Considerar use de gerador de interpretador (ex.: tabela gerada a
+    partir de especificação PPC).
+  → Não avançar para M2 até M1 estar estável.
+
+Se M4 falhar (hello world não renderiza):
+  → Isolar: é bug de boot, loader, memory mapper ou framebuffer?
+  → Não avançar para GPU até M4 estar resolvido.
+
+Se M5 falhar (nenhum jogo comercial boota):
+  → Priorizar XAM stub (jogos consultam muitas APIs na inicialização).
+  → Considerar perfil de compatibilidade por título (pasta Compatibility).
+
+Se M6 falhar (jogos bootam mas lentos):
+  → F2 (AOT) pode ser insuficiente. Priorizar F3 (JIT).
+  → Se F3 falhar em W^X, aceitar Estágio 2 limitado.
+
+Se M7 falhar (W^X bloqueado em muitos OEMs):
+  → Priorizar AOT (F2) como estratégia principal.
+  → Documentar publicamente a limitação.
+  → Abrir issue de pesquisa: "JIT em Android pós-10: state of the art".
+
+
+================================================================================
+9. REFERÊNCIAS E FONTES
+================================================================================
+
+- IBM Xenon PPE manual (público).
+- IBM PowerPC 2.02 ISA (público).
+- IBM AltiVec/VMX manual (público).
+- Documentação pública da arquitetura Xenos (patentes, whitepapers
+  Microsoft, análises técnicas independentes).
+- Especificação XEX (engenharia reversa pública, sem código proprietário).
+- Especificação FATX (pública).
+- Especificação Vulkan (Khronos Group).
+- Android NDK — documentação de W^X e JIT API.
+
+Nenhuma fonte proprietária da Microsoft é usada ou distribuída.
+
+
+================================================================================
+FIM DO DOCUMENTO
+================================================================================
