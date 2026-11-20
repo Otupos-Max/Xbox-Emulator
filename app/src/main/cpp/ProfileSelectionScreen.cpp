@@ -56,11 +56,13 @@ struct CardLayout {
     float gap;
 };
 
-CardLayout cardLayout(float width, float height) {
+CardLayout cardLayout(float width, float height, int count) {
     CardLayout layout{};
     layout.gap = 14.f;
-    layout.startX = width * .385f;
-    layout.width = (width * .59f - layout.gap * 3.f) / 4.f;
+    const float areaWidth = width * .59f;
+    layout.width = (areaWidth - layout.gap * (count - 1)) / count;
+    layout.startX = width * .385f + (areaWidth - count * layout.width -
+                                     (count - 1) * layout.gap) * .5f;
     layout.top = height * .27f;
     layout.height = height * .40f;
     return layout;
@@ -217,6 +219,19 @@ void drawSilhouette(const ProfileDrawApi& api, float cx, float top, float areaH,
                     headR * 1.5f, color);
 }
 
+void drawCreateProfileIcon(const ProfileDrawApi& api, float cx, float top, float areaH) {
+    const float radius = std::min(areaH * .25f, 35.f);
+    const float cy = top + areaH * .45f;
+    drawCircle(api, cx, cy, radius + 3.f, {0.25f, 0.27f, 0.29f, .32f});
+    drawCircle(api, cx, cy, radius, {0.36f, 0.38f, 0.41f, .95f});
+    drawSilhouette(api, cx, top + areaH * .22f, areaH * .56f,
+                   {0.86f, 0.87f, 0.89f, 1.f});
+    drawRect(api, cx + radius * .34f, cy + radius * .12f, radius * .95f,
+             radius * .20f, kWhite);
+    drawRect(api, cx + radius * .72f, cy - radius * .26f, radius * .20f,
+             radius * .95f, kWhite);
+}
+
 uint32_t nextCodepoint(const char*& text) {
     const unsigned char first = static_cast<unsigned char>(*text++);
     if (first < 0x80u) return first;
@@ -244,7 +259,15 @@ uint32_t nextCodepoint(const char*& text) {
 bool ProfileSelectionScreen::initialize(AAssetManager* assets,
                                         const std::string& storagePath) {
     storagePath_ = storagePath;
-    loadSelection();
+    activeProfile_ = -1;
+    profileName_.clear();
+    profileFemale_ = false;
+    selectedProfile_ = -1;
+    selectionBlend_[0] = 0.f;
+    selectionBlend_[1] = 0.f;
+    selectionBlend_[2] = 0.f;
+    introComplete_ = false;
+    loadProfile();
     if (!createPrograms()) return false;
     if (!loadFont(assets)) return false;
     if (!loadModel(assets, "profile_models/male.xmesh", male_)) return false;
@@ -815,13 +838,31 @@ void ProfileSelectionScreen::drawPortrait(const Model& model, float x, float y, 
 void ProfileSelectionScreen::draw(float width, float height, float elapsedSeconds,
                                   const ProfileDrawApi& api) {
     drawBackground(elapsedSeconds);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    const float intro = std::clamp(elapsedSeconds / 1.15f, 0.f, 1.f);
+    if (intro < 1.f) {
+        const float stripeX = -width * .3f + (width * 1.6f) * intro;
+        const float stripeY = height * .48f;
+        drawRect(api, stripeX - width * .12f, stripeY - 5.f, width * .24f, 10.f,
+                 {kGreenBright.r, kGreenBright.g, kGreenBright.b, .12f});
+        drawRect(api, stripeX - width * .08f, stripeY - 2.f, width * .16f, 4.f,
+                 {kGreenBright.r, kGreenBright.g, kGreenBright.b, .42f});
+        drawRect(api, stripeX - width * .035f, stripeY - 1.f, width * .07f, 2.f,
+                 {0.82f, 1.f, 0.75f, .9f});
+    }
+
+    if (intro < .72f) return;
+    introComplete_ = intro >= 1.f;
+    const float reveal = std::clamp((intro - .72f) / .28f, 0.f, 1.f);
     float delta = hasPreviousFrame_ ? elapsedSeconds - previousFrameTime_ : 1.f / 60.f;
     delta = std::clamp(delta, 0.f, 0.08f);
     previousFrameTime_ = elapsedSeconds;
     hasPreviousFrame_ = true;
     const float blendAmount = 1.f - std::exp(-delta * 9.f);
-    for (int i = 0; i < 4; ++i) {
+    const int count = profileCount();
+    for (int i = 0; i < count; ++i) {
         const float target = i == selectedProfile_ ? 1.f : 0.f;
         selectionBlend_[i] += (target - selectionBlend_[i]) * blendAmount;
     }
@@ -831,42 +872,44 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
     glDepthFunc(GL_LEQUAL);
     glDepthMask(GL_TRUE);
 
-    // Large hero avatar on the left, standing on the floor.
-    glDisable(GL_DEPTH_TEST);
-    const float floorLine = height - 42.f;
-    const float heroCenterX = width * .235f;
-    drawRect(api, heroCenterX - 150.f, floorLine - 8.f, 300.f, 14.f, {0.f, 0.f, 0.f, .10f});
-    drawRect(api, heroCenterX - 100.f, floorLine - 5.f, 200.f, 8.f, {0.f, 0.f, 0.f, .12f});
-    glEnable(GL_DEPTH_TEST);
-    glClear(GL_DEPTH_BUFFER_BIT);
-    const Model& heroModel = selectedProfile_ == 1 ? female_ : male_;
-    const float modelScale = std::min(height * .45f, 330.f);
-    const float modelCenterY = floorLine - modelScale * .995f;
-    const float idleYaw = std::sin(elapsedSeconds * .22f) * .012f;
-    drawModel(heroModel, heroCenterX, modelCenterY, modelScale, idleYaw, 1.f, 1.f);
-    glDisable(GL_DEPTH_TEST);
+    const bool selectedHasAvatar = !profileName_.empty() && selectedProfile_ == 0;
+    if (selectedHasAvatar) {
+        glDisable(GL_DEPTH_TEST);
+        const float floorLine = height - 42.f;
+        const float heroCenterX = width * .235f;
+        drawRect(api, heroCenterX - 150.f, floorLine - 8.f, 300.f, 14.f,
+                 {0.f, 0.f, 0.f, .10f});
+        drawRect(api, heroCenterX - 100.f, floorLine - 5.f, 200.f, 8.f,
+                 {0.f, 0.f, 0.f, .12f});
+        glEnable(GL_DEPTH_TEST);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        const Model& heroModel = profileFemale_ ? female_ : male_;
+        const float modelScale = std::min(height * .45f, 330.f);
+        const float modelCenterY = floorLine - modelScale * .995f;
+        const float idleYaw = std::sin(elapsedSeconds * .22f) * .012f;
+        drawModel(heroModel, heroCenterX, modelCenterY, modelScale, idleYaw, 1.f, 1.f);
+        glDisable(GL_DEPTH_TEST);
+    }
 
-    // Right-aligned title block.
     const float rightEdge = width - 48.f;
     const char* title = "Escolha um perfil";
-    const char* subtitle = "Faça login para continuar";
+    const char* subtitle = hasProfile()
+        ? "Selecione seu perfil ou entre como convidado"
+        : "Crie uma conta ou entre como convidado";
     drawText(title, rightEdge - textWidth(title, 6.6f), height * .075f, 6.6f,
              kWhite.r, kWhite.g, kWhite.b, kWhite.a);
     drawText(subtitle, rightEdge - textWidth(subtitle, 3.5f), height * .165f, 3.5f,
              kWhite.r, kWhite.g, kWhite.b, .92f);
 
-    static const char* names[] = {"Jogador um", "Jogador dois", "Criar perfil", "Convidado"};
-    static const char* statuses[] = {"Online", "Online", "Novo perfil", "Offline"};
-
-    const CardLayout layout = cardLayout(width, height);
+    const CardLayout layout = cardLayout(width, height, count);
     const float radius = 12.f;
     const float pulse = .5f + .5f * std::sin(elapsedSeconds * 2.7f);
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < count; ++i) {
         const float blend = std::clamp(selectionBlend_[i], 0.f, 1.f);
         const float grow = blend * 10.f;
         const float x = layout.startX + i * (layout.width + layout.gap) - grow * .5f;
-        const float y = layout.top - grow * 1.4f;
+        const float y = layout.top + (1.f - reveal) * 55.f - grow * 1.4f;
         const float w = layout.width + grow;
         const float h = layout.height + grow * 1.4f;
         const float portraitH = h * .65f;
@@ -897,11 +940,15 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
         drawRect(api, x + radius, y + 2.f, w - radius * 2.f, portraitH * .35f,
                  {1.f, 1.f, 1.f, .10f});
 
-        if (i == 2 || i == 3) {
+        const bool isCreate = !hasProfile() && i == createProfileIndex();
+        const bool isGuest = i == guestProfileIndex();
+        if (isCreate) {
+            drawCreateProfileIcon(api, centerX, y + 8.f, portraitH - 8.f);
+        } else if (isGuest) {
             drawSilhouette(api, centerX, y + 8.f, portraitH - 8.f, kSilhouette);
         } else {
             glEnable(GL_DEPTH_TEST);
-            drawPortrait(i == 1 ? female_ : male_, x + 3.f, y + 3.f, w - 6.f,
+            drawPortrait(profileFemale_ ? female_ : male_, x + 3.f, y + 3.f, w - 6.f,
                          portraitH - 3.f, elapsedSeconds);
             glDisable(GL_DEPTH_TEST);
         }
@@ -917,23 +964,26 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
             kText.g + (kWhite.g - kText.g) * blend,
             kText.b + (kWhite.b - kText.b) * blend, 1.f};
         const float textX = x + 18.f;
-        drawText(names[i], textX, y + portraitH + 14.f, 3.3f,
+        const char* name = isCreate ? "Criar perfil" :
+                           isGuest ? "Convidado" : profileName_.c_str();
+        const char* status = isCreate ? "Nova conta" :
+                             isGuest ? "Temporário" : "Conta";
+        drawText(name, textX, y + portraitH + 14.f, 3.3f,
                  labelColor.r, labelColor.g, labelColor.b, 1.f);
 
         const float orbY = y + portraitH + (h - portraitH) * .70f;
         const float orbR = 9.f;
-        if (i == 2) {
+        if (isCreate) {
             drawCircle(api, textX + orbR, orbY, orbR, {0.28f, 0.29f, 0.31f, 1.f});
             drawRect(api, textX + orbR - 5.f, orbY - 1.25f, 10.f, 2.5f, kWhite);
             drawRect(api, textX + orbR - 1.25f, orbY - 5.f, 2.5f, 10.f, kWhite);
         } else {
-            drawOrb(api, textX + orbR, orbY, orbR, i == 3 ? kOffline : kOnline);
+            drawOrb(api, textX + orbR, orbY, orbR, isGuest ? kOffline : kOnline);
         }
-        drawText(statuses[i], textX + orbR * 2.f + 10.f, orbY - 12.f, 2.6f,
+        drawText(status, textX + orbR * 2.f + 10.f, orbY - 12.f, 2.6f,
                  labelColor.r, labelColor.g, labelColor.b, .95f);
     }
 
-    // Controller hints bottom-left: green A and red B buttons.
     const float hintY = height - 34.f;
     drawOrb(api, 52.f, hintY, 14.f, kGreen);
     drawText("A", 52.f - textWidth("A", 2.6f) * .5f, hintY - 13.f, 2.6f,
@@ -948,12 +998,18 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
 
 ProfileInputAction ProfileSelectionScreen::handleTouch(float x, float y, float width,
                                                        float height) {
-    const CardLayout layout = cardLayout(width, height);
-    for (int i = 0; i < 4; ++i) {
+    if (!introComplete_) return ProfileInputAction::None;
+    const int count = profileCount();
+    const CardLayout layout = cardLayout(width, height, count);
+    for (int i = 0; i < count; ++i) {
         const float left = layout.startX + i * (layout.width + layout.gap);
         if (x >= left && x <= left + layout.width &&
             y >= layout.top - 14.f && y <= layout.top + layout.height) {
-            if (selectedProfile_ == i) return ProfileInputAction::Confirm;
+            if (selectedProfile_ == i ||
+                (!hasProfile() && i == createProfileIndex())) {
+                selectedProfile_ = i;
+                return selectedAction();
+            }
             selectedProfile_ = i;
             return ProfileInputAction::None;
         }
@@ -961,24 +1017,28 @@ ProfileInputAction ProfileSelectionScreen::handleTouch(float x, float y, float w
 
     // Bottom-left controller hints: "A Selecionar" then "B Voltar".
     if (y >= height - 64.f && x < 360.f) {
-        return x < 200.f ? ProfileInputAction::Confirm : ProfileInputAction::Back;
+        return x < 200.f ? selectedAction() : ProfileInputAction::Back;
     }
     return ProfileInputAction::None;
 }
 
 ProfileInputAction ProfileSelectionScreen::handleKey(int keyCode) {
+    if (!introComplete_) return ProfileInputAction::None;
     switch (keyCode) {
         case AKEYCODE_DPAD_LEFT:
-            selectedProfile_ = (selectedProfile_ + 3) % 4;
+            selectedProfile_ = selectedProfile_ < 0
+                ? profileCount() - 1
+                : (selectedProfile_ + profileCount() - 1) % profileCount();
             return ProfileInputAction::None;
         case AKEYCODE_DPAD_RIGHT:
-            selectedProfile_ = (selectedProfile_ + 1) % 4;
+            selectedProfile_ = selectedProfile_ < 0
+                ? 0 : (selectedProfile_ + 1) % profileCount();
             return ProfileInputAction::None;
         case AKEYCODE_DPAD_CENTER:
         case AKEYCODE_ENTER:
         case AKEYCODE_BUTTON_A:
         case AKEYCODE_BUTTON_START:
-            return ProfileInputAction::Confirm;
+            return selectedAction();
         case AKEYCODE_BACK:
         case AKEYCODE_ESCAPE:
         case AKEYCODE_BUTTON_B:
@@ -991,6 +1051,7 @@ ProfileInputAction ProfileSelectionScreen::handleKey(int keyCode) {
 
 ProfileInputAction ProfileSelectionScreen::handleJoystick(float leftX, float rightX,
                                                           float hatX) {
+    if (!introComplete_) return ProfileInputAction::None;
     float horizontal = std::abs(leftX) >= std::abs(rightX) ? leftX : rightX;
     if (std::abs(hatX) > 0.5f) horizontal = hatX;
     const int direction = horizontal < -0.55f ? -1 : horizontal > 0.55f ? 1 : 0;
@@ -1005,62 +1066,131 @@ ProfileInputAction ProfileSelectionScreen::handleJoystick(float leftX, float rig
 
     joystickDirection_ = direction;
     joystickRepeatAt_ = now + std::chrono::milliseconds(300);
-    selectedProfile_ = (selectedProfile_ + 4 + direction) % 4;
+    selectedProfile_ = selectedProfile_ < 0
+        ? (direction < 0 ? profileCount() - 1 : 0)
+        : (selectedProfile_ + profileCount() + direction) % profileCount();
     return ProfileInputAction::None;
 }
 
 void ProfileSelectionScreen::setSelectedProfile(int index) {
-    if (index >= 0 && index < 4) selectedProfile_ = index;
+    if (index == 0 && hasProfile()) {
+        selectedProfile_ = 0;
+    } else if (index == 1) {
+        selectedProfile_ = guestProfileIndex();
+    } else {
+        selectedProfile_ = -1;
+    }
 }
 
 void ProfileSelectionScreen::confirmSelection() {
-    activeProfile_ = selectedProfile_;
-    saveSelection();
+    if (selectedAction() == ProfileInputAction::Confirm) {
+        activeProfile_ = selectedProfile_ == guestProfileIndex() ? 1 : 0;
+    }
 }
 
 void ProfileSelectionScreen::cancelSelection() {
-    selectedProfile_ = activeProfile_;
+    setSelectedProfile(activeProfile_);
 }
 
 const char* ProfileSelectionScreen::activeProfileName() const {
-    static const char* names[] = {"Jogador um", "Jogador dois", "Perfil novo", "Convidado"};
-    return names[std::clamp(activeProfile_, 0, 3)];
+    if (activeProfile_ == 0 && hasProfile()) return profileName_.c_str();
+    if (activeProfile_ == 1) return "Convidado";
+    return "Nenhum perfil";
 }
 
-void ProfileSelectionScreen::loadSelection() {
+int ProfileSelectionScreen::profileCount() const {
+    return 2;
+}
+
+int ProfileSelectionScreen::createProfileIndex() const {
+    return hasProfile() ? -1 : 0;
+}
+
+int ProfileSelectionScreen::guestProfileIndex() const {
+    return 1;
+}
+
+ProfileInputAction ProfileSelectionScreen::selectedAction() const {
+    if (selectedProfile_ < 0 || selectedProfile_ >= profileCount()) {
+        return ProfileInputAction::None;
+    }
+    if (createProfileIndex() >= 0 && selectedProfile_ == createProfileIndex()) {
+        return ProfileInputAction::CreateProfile;
+    }
+    return ProfileInputAction::Confirm;
+}
+
+bool ProfileSelectionScreen::createProfile(const std::string& name, bool female) {
+    if (hasProfile()) return false;
+    std::string cleaned = name;
+    cleaned.erase(std::remove_if(cleaned.begin(), cleaned.end(),
+                                 [](unsigned char ch) {
+                                     return ch < 0x20 || ch == 0x7f;
+                                 }), cleaned.end());
+    const auto first = cleaned.find_first_not_of(" \t");
+    if (first == std::string::npos) return false;
+    const auto last = cleaned.find_last_not_of(" \t");
+    cleaned = cleaned.substr(first, last - first + 1);
+    if (cleaned.size() > 192 || cleaned.find('\n') != std::string::npos ||
+        cleaned.find('\r') != std::string::npos) {
+        return false;
+    }
+    if (!saveProfile(cleaned, female)) return false;
+    profileName_ = std::move(cleaned);
+    profileFemale_ = female;
+    activeProfile_ = 0;
+    selectedProfile_ = 0;
+    return true;
+}
+
+void ProfileSelectionScreen::loadProfile() {
+    profileName_.clear();
+    profileFemale_ = false;
     if (storagePath_.empty()) return;
     const std::string path = storagePath_ + "/xenon-profile.dat";
     FILE* file = std::fopen(path.c_str(), "rb");
     if (!file) return;
-    int storedProfile = 0;
-    const bool valid = std::fscanf(file, "%d", &storedProfile) == 1 &&
-                       storedProfile >= 0 && storedProfile < 4;
+    char header[32] = {};
+    char gender = '\0';
+    char name[193] = {};
+    const bool valid = std::fgets(header, sizeof(header), file) &&
+                       std::strcmp(header, "XENON_PROFILE_V1\n") == 0 &&
+                       std::fscanf(file, "%c\n", &gender) == 1 &&
+                       (gender == 'M' || gender == 'F') &&
+                       std::fgets(name, sizeof(name), file) != nullptr;
     std::fclose(file);
-    if (valid) {
-        activeProfile_ = storedProfile;
-        selectedProfile_ = storedProfile;
-    }
+    if (!valid) return;
+    const size_t length = std::strcspn(name, "\r\n");
+    name[length] = '\0';
+    if (length == 0) return;
+    profileName_ = name;
+    profileFemale_ = gender == 'F';
+    activeProfile_ = -1;
+    selectedProfile_ = -1;
 }
 
-void ProfileSelectionScreen::saveSelection() const {
+bool ProfileSelectionScreen::saveProfile(const std::string& name, bool female) const {
     if (storagePath_.empty()) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag,
-                            "Cannot persist profile selection: app storage path is empty");
-        return;
+                            "Cannot persist profile: app storage path is empty");
+        return false;
     }
     const std::string path = storagePath_ + "/xenon-profile.dat";
     FILE* file = std::fopen(path.c_str(), "wb");
     if (!file) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag,
                             "Cannot open profile storage for writing: %s", path.c_str());
-        return;
+        return false;
     }
-    const int written = std::fprintf(file, "%d\n", activeProfile_);
+    const int written = std::fprintf(file, "XENON_PROFILE_V1\n%c\n%s\n",
+                                     female ? 'F' : 'M', name.c_str());
     const int closeResult = std::fclose(file);
     if (written < 0 || closeResult != 0) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag,
-                            "Cannot persist the selected profile: %s", path.c_str());
+                            "Cannot persist the profile: %s", path.c_str());
+        return false;
     }
+    return true;
 }
 
 } // namespace xenon

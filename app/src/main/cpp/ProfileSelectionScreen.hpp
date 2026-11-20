@@ -17,6 +17,7 @@ struct ProfileDrawApi {
 enum class ProfileInputAction {
     None,
     Confirm,
+    CreateProfile,
     Back
 };
 
@@ -30,9 +31,12 @@ public:
     ProfileInputAction handleKey(int keyCode);
     ProfileInputAction handleJoystick(float leftX, float rightX, float hatX);
 
+    bool createProfile(const std::string& name, bool female);
     void setSelectedProfile(int index);
     void confirmSelection();
     void cancelSelection();
+    bool hasProfile() const { return !profileName_.empty(); }
+    bool hasActiveProfile() const { return activeProfile_ >= 0; }
     int activeProfile() const { return activeProfile_; }
     int selectedProfile() const { return selectedProfile_; }
     const char* activeProfileName() const;
@@ -71,8 +75,12 @@ private:
                    float angle, float alpha, float verticalScale);
     void drawPortrait(const Model& model, float x, float y, float w, float h,
                       float elapsedSeconds);
-    void loadSelection();
-    void saveSelection() const;
+    void loadProfile();
+    bool saveProfile(const std::string& name, bool female) const;
+    int profileCount() const;
+    int createProfileIndex() const;
+    int guestProfileIndex() const;
+    ProfileInputAction selectedAction() const;
 
     GLuint backgroundProgram_ = 0;
     GLuint backgroundBuffer_ = 0;
@@ -105,10 +113,13 @@ private:
     Model male_;
     Model female_;
     std::string storagePath_;
-    float selectionBlend_[4] = {1.f, 0.f, 0.f, 0.f};
-    int selectedProfile_ = 0;
-    int activeProfile_ = 0;
+    std::string profileName_;
+    bool profileFemale_ = false;
+    float selectionBlend_[3] = {0.f, 0.f, 0.f};
+    int selectedProfile_ = -1;
+    int activeProfile_ = -1;
     int joystickDirection_ = 0;
+    bool introComplete_ = false;
     std::chrono::steady_clock::time_point joystickRepeatAt_;
     float previousFrameTime_ = 0.f;
     bool hasPreviousFrame_ = false;

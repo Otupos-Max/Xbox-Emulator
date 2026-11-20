@@ -1,13 +1,21 @@
 package com.xboxemulator;
 
+import android.app.AlertDialog;
 import android.app.NativeActivity;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.InputFilter;
+import android.text.InputType;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
+import android.widget.TextView;
 
 /**
  * NativeActivity em tela cheia imersiva: esconde a barra de status e os
@@ -15,6 +23,7 @@ import android.view.WindowManager;
  * temporariamente ao deslizar a partir da borda da tela.
  */
 public class XenonActivity extends NativeActivity {
+    private AlertDialog profileDialog;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -44,6 +53,83 @@ public class XenonActivity extends NativeActivity {
             hideSystemBars();
         }
     }
+
+    public void showCreateProfileDialog() {
+        runOnUiThread(() -> {
+            if (isFinishing() || (profileDialog != null && profileDialog.isShowing())) {
+                return;
+            }
+
+            int padding = (int) (24 * getResources().getDisplayMetrics().density);
+            LinearLayout content = new LinearLayout(this);
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.setPadding(padding, padding, padding, 0);
+
+            TextView nameLabel = new TextView(this);
+            nameLabel.setText("Nome da conta");
+            content.addView(nameLabel);
+
+            EditText nameInput = new EditText(this);
+            nameInput.setSingleLine(true);
+            nameInput.setHint("Digite o nome");
+            nameInput.setInputType(InputType.TYPE_CLASS_TEXT
+                    | InputType.TYPE_TEXT_FLAG_CAP_WORDS
+                    | InputType.TYPE_TEXT_VARIATION_PERSON_NAME);
+            nameInput.setFilters(new InputFilter[] {new InputFilter.LengthFilter(32)});
+            content.addView(nameInput);
+
+            TextView genderLabel = new TextView(this);
+            genderLabel.setText("Gênero");
+            LinearLayout.LayoutParams genderParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            genderParams.topMargin = padding / 2;
+            content.addView(genderLabel, genderParams);
+
+            RadioGroup genderOptions = new RadioGroup(this);
+            genderOptions.setOrientation(RadioGroup.HORIZONTAL);
+            RadioButton maleOption = new RadioButton(this);
+            maleOption.setText("Masculino");
+            maleOption.setId(View.generateViewId());
+            RadioButton femaleOption = new RadioButton(this);
+            femaleOption.setText("Feminino");
+            femaleOption.setId(View.generateViewId());
+            genderOptions.addView(maleOption);
+            genderOptions.addView(femaleOption);
+            genderOptions.check(maleOption.getId());
+            content.addView(genderOptions);
+
+            profileDialog = new AlertDialog.Builder(this)
+                    .setTitle("Criar perfil")
+                    .setView(content)
+                    .setNegativeButton("Cancelar", null)
+                    .setPositiveButton("Criar", null)
+                    .create();
+            profileDialog.setOnShowListener(dialog -> {
+                profileDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                    String name = nameInput.getText().toString().trim();
+                    if (name.isEmpty()) {
+                        nameInput.setError("Digite um nome");
+                        nameInput.requestFocus();
+                        return;
+                    }
+                    nativeOnProfileCreated(name, genderOptions.getCheckedRadioButtonId()
+                            == femaleOption.getId());
+                    profileDialog.dismiss();
+                });
+            });
+            profileDialog.setOnDismissListener(dialog -> profileDialog = null);
+            profileDialog.show();
+            Window dialogWindow = profileDialog.getWindow();
+            if (dialogWindow != null) {
+                dialogWindow.setSoftInputMode(
+                        WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+            }
+            nameInput.requestFocus();
+        });
+    }
+
+    private native void nativeOnProfileCreated(String name, boolean female);
 
     @SuppressWarnings("deprecation")
     private void hideSystemBars() {

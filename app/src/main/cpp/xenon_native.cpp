@@ -9,10 +9,12 @@
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaExtractor.h>
 #include <media/NdkMediaFormat.h>
+#include <jni.h>
 #include "ProfileSelectionScreen.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <thread>
 #include <cmath>
 #include <chrono>
@@ -20,11 +22,30 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <sys/types.h>
 #include <vector>
 #include <unistd.h>
 
 namespace {
+
+struct PendingProfile {
+    std::mutex mutex;
+    std::string name;
+    bool female = false;
+    bool ready = false;
+};
+
+PendingProfile pendingProfile;
+
+bool takePendingProfile(std::string& name, bool& female) {
+    std::lock_guard<std::mutex> lock(pendingProfile.mutex);
+    if (!pendingProfile.ready) return false;
+    name = std::move(pendingProfile.name);
+    female = pendingProfile.female;
+    pendingProfile.ready = false;
+    return true;
+}
 
 enum class Screen : int { Home, Library, System, Settings, ProfileSelect };
 
@@ -661,9 +682,11 @@ struct AppState {
     bool showingSplash = true;
     bool playingSplashVideo = false;
     ANativeWindow* window = nullptr;
+    ANativeActivity* activity = nullptr;
     AAssetManager* assetManager = nullptr;
     std::string profileStoragePath;
     std::chrono::steady_clock::time_point splashStarted;
+    std::chrono::steady_clock::time_point profileSelectionStarted;
 
     void initializeRenderer() {
         rendererInitialized = renderer.initialize(window);
@@ -675,11 +698,14 @@ struct AppState {
             __android_log_print(ANDROID_LOG_ERROR, "Xenon",
                                 "Profile selection initialization failed; check model assets and GLES support");
         }
+        profileSelectionStarted = std::chrono::steady_clock::now();
     }
 
-    void initializeWindow(ANativeWindow* newWindow, AAssetManager* assets,
+    void initializeWindow(ANativeWindow* newWindow, ANativeActivity* nativeActivity,
+                          AAssetManager* assets,
                           const char* storagePath) {
         window = newWindow;
+        activity = nativeActivity;
         assetManager = assets;
         profileStoragePath = storagePath ? storagePath : "";
         initialized = true;
@@ -802,6 +828,7 @@ struct AppState {
             std::chrono::steady_clock::now() - splashStarted).count();
         if (elapsed >= 2.7f) {
             showingSplash = false;
+            profileSelectionStarted = std::chrono::steady_clock::now();
             return;
         }
 
@@ -840,15 +867,60 @@ struct AppState {
         };
         const xenon::ProfileDrawApi api{&renderer, drawRect};
         const float elapsed = std::chrono::duration<float>(
-            std::chrono::steady_clock::now() - splashStarted).count();
+            std::chrono::steady_clock::now() - profileSelectionStarted).count();
         profileSelection.draw(static_cast<float>(renderer.width),
                               static_cast<float>(renderer.height), elapsed, api);
+    }
+
+    void requestCreateProfileDialog() {
+        if (!activity || !activity->vm || !activity->clazz) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Cannot open profile dialog: Android activity is unavailable");
+            return;
+        }
+
+        JNIEnv* env = nullptr;
+        bool attached = false;
+        const jint status = activity->vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+        if (status == JNI_EDETACHED) {
+            if (activity->vm->AttachCurrentThread(
+                    reinterpret_cast<void**>(&env), nullptr) != JNI_OK) {
+                __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                    "Cannot attach to Android VM to open profile dialog");
+                return;
+            }
+            attached = true;
+        } else if (status != JNI_OK) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Cannot access Android VM to open profile dialog");
+            return;
+        }
+
+        jclass activityClass = env->GetObjectClass(activity->clazz);
+        jmethodID showDialog = activityClass
+            ? env->GetMethodID(activityClass, "showCreateProfileDialog", "()V") : nullptr;
+        if (showDialog) {
+            env->CallVoidMethod(activity->clazz, showDialog);
+        }
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Android profile dialog raised an exception");
+        } else if (!showDialog) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Android profile dialog method is missing");
+        }
+        if (activityClass) env->DeleteLocalRef(activityClass);
+        if (attached) activity->vm->DetachCurrentThread();
     }
 
     void applyProfileAction(xenon::ProfileInputAction action) {
         if (action == xenon::ProfileInputAction::Confirm) {
             profileSelection.confirmSelection();
-            screen = Screen::Home;
+            if (profileSelection.hasActiveProfile()) screen = Screen::Home;
+        } else if (action == xenon::ProfileInputAction::CreateProfile) {
+            requestCreateProfileDialog();
         } else if (action == xenon::ProfileInputAction::Back) {
             profileSelection.cancelSelection();
             screen = Screen::Home;
@@ -913,6 +985,16 @@ struct AppState {
         }
     }
 
+    void handleCreatedProfile(const std::string& name, bool female) {
+        if (screen != Screen::ProfileSelect) return;
+        if (profileSelection.createProfile(name, female)) {
+            screen = Screen::Home;
+        } else {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Profile creation failed; check the profile name and storage");
+        }
+    }
+
     void handleControllerMotion(const AInputEvent* event) {
         if (screen != Screen::ProfileSelect) return;
         const float leftX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_X, 0);
@@ -931,7 +1013,8 @@ void onAppCmd(android_app* app, int32_t cmd) {
     switch (cmd) {
         case APP_CMD_INIT_WINDOW:
             if (app->window && state) {
-                state->initializeWindow(app->window, app->activity->assetManager,
+                state->initializeWindow(app->window, app->activity,
+                                        app->activity->assetManager,
                                         app->activity->internalDataPath);
             }
             break;
@@ -992,6 +1075,21 @@ int32_t onInputEvent(android_app* app, AInputEvent* event) {
 
 } // namespace
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_xboxemulator_XenonActivity_nativeOnProfileCreated(
+    JNIEnv* env, jobject, jstring profileName, jboolean female) {
+    if (!profileName) return;
+    const char* utfName = env->GetStringUTFChars(profileName, nullptr);
+    if (!utfName) return;
+    {
+        std::lock_guard<std::mutex> lock(pendingProfile.mutex);
+        pendingProfile.name = utfName;
+        pendingProfile.female = female == JNI_TRUE;
+        pendingProfile.ready = true;
+    }
+    env->ReleaseStringUTFChars(profileName, utfName);
+}
+
 void android_main(android_app* app) {
     AppState state;
     app->userData = &state;
@@ -1007,6 +1105,11 @@ void android_main(android_app* app) {
         if (result == ALOOPER_POLL_ERROR) break;
         if (source) source->process(app, source);
         if (app->destroyRequested) running = false;
+        std::string createdName;
+        bool createdFemale = false;
+        if (takePendingProfile(createdName, createdFemale)) {
+            state.handleCreatedProfile(createdName, createdFemale);
+        }
         if (state.initialized) state.draw();
     }
     state.profileSelection.shutdown();
