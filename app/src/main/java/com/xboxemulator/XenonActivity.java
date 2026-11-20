@@ -18,7 +18,14 @@ import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 
 /**
  * NativeActivity em tela cheia imersiva: esconde a barra de status e os
@@ -101,7 +108,7 @@ public class XenonActivity extends NativeActivity {
             LinearLayout formRow = new LinearLayout(this);
             formRow.setOrientation(LinearLayout.HORIZONTAL);
             LinearLayout.LayoutParams formParams = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, dp(82));
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(96));
             formParams.topMargin = dp(8);
             content.addView(formRow, formParams);
 
@@ -123,8 +130,8 @@ public class XenonActivity extends NativeActivity {
             nameInput.setPadding(dp(12), 0, dp(12), 0);
             nameInput.setBackground(roundedBackground(
                     Color.rgb(246, 248, 246), dp(12), Color.rgb(225, 230, 226)));
-            LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(-1, dp(42));
-            inputParams.topMargin = dp(5);
+            LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(-1, dp(48));
+            inputParams.topMargin = dp(7);
             nameColumn.addView(nameInput, inputParams);
 
             LinearLayout genderColumn = new LinearLayout(this);
@@ -137,8 +144,8 @@ public class XenonActivity extends NativeActivity {
 
             LinearLayout genderOptions = new LinearLayout(this);
             genderOptions.setOrientation(LinearLayout.HORIZONTAL);
-            LinearLayout.LayoutParams optionsParams = new LinearLayout.LayoutParams(-1, dp(56));
-            optionsParams.topMargin = dp(5);
+            LinearLayout.LayoutParams optionsParams = new LinearLayout.LayoutParams(-1, dp(68));
+            optionsParams.topMargin = dp(7);
             genderColumn.addView(genderOptions, optionsParams);
 
             LinearLayout maleOption = createGenderOption("M", "Masculino");
@@ -187,8 +194,12 @@ public class XenonActivity extends NativeActivity {
             actions.addView(createButton, createParams);
             createButton.setOnClickListener(view -> submitProfile(selectedFemale[0]));
 
+            ScrollView dialogContent = new ScrollView(this);
+            dialogContent.setFillViewport(true);
+            dialogContent.addView(content);
+
             profileDialog = new Dialog(this);
-            profileDialog.setContentView(content);
+            profileDialog.setContentView(dialogContent);
             profileDialog.setCancelable(true);
             profileDialog.setOnDismissListener(dialog -> {
                 profileDialog = null;
@@ -206,7 +217,7 @@ public class XenonActivity extends NativeActivity {
                 int screenWidth = getResources().getDisplayMetrics().widthPixels;
                 int screenHeight = getResources().getDisplayMetrics().heightPixels;
                 int dialogWidth = Math.min(dp(720), (int) (screenWidth * 0.92f));
-                int dialogHeight = Math.min(dp(230), (int) (screenHeight * 0.90f));
+                int dialogHeight = Math.min(dp(280), (int) (screenHeight * 0.90f));
                 dialogWindow.setLayout(dialogWidth, dialogHeight);
                 WindowManager.LayoutParams attributes = dialogWindow.getAttributes();
                 attributes.dimAmount = 0.62f;
@@ -243,6 +254,14 @@ public class XenonActivity extends NativeActivity {
             nameInput.requestFocus();
             return;
         }
+        try {
+            saveProfile(name, female);
+        } catch (IOException | SecurityException error) {
+            Log.e(TAG, "Não foi possível salvar o perfil no armazenamento privado", error);
+            profileError.setText("Não foi possível salvar o perfil neste dispositivo.");
+            profileError.setVisibility(View.VISIBLE);
+            return;
+        }
         profileError.setVisibility(View.GONE);
         profileDialog.setCancelable(false);
         createButton.setEnabled(false);
@@ -261,6 +280,27 @@ public class XenonActivity extends NativeActivity {
             createButton.setEnabled(true);
             createButton.setAlpha(1f);
             createButton.setText("Tentar novamente");
+        }
+    }
+
+    private void saveProfile(String name, boolean female) throws IOException {
+        File destination = new File(getFilesDir(), "xenon-profile.dat");
+        File temporary = new File(getFilesDir(), "xenon-profile.dat.tmp");
+        String contents = "XENON_PROFILE_V1\n" + (female ? "F" : "M") + "\n" + name + "\n";
+        Files.write(temporary.toPath(), contents.getBytes(StandardCharsets.UTF_8));
+        try {
+            Files.move(temporary.toPath(), destination.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException atomicMoveError) {
+            try {
+                Files.move(temporary.toPath(), destination.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException moveError) {
+                moveError.addSuppressed(atomicMoveError);
+                throw moveError;
+            }
+        } finally {
+            Files.deleteIfExists(temporary.toPath());
         }
     }
 

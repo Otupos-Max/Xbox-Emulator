@@ -986,7 +986,6 @@ struct AppState {
     }
 
     bool handleCreatedProfile(const std::string& name, bool female) {
-        if (screen != Screen::ProfileSelect) return false;
         if (profileSelection.createProfile(name, female)) {
             screen = Screen::Home;
             return true;

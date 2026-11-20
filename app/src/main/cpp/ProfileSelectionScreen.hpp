@@ -76,7 +76,6 @@ private:
     void drawPortrait(const Model& model, float x, float y, float w, float h,
                       float elapsedSeconds);
     void loadProfile();
-    bool saveProfile(const std::string& name, bool female) const;
     int profileCount() const;
     int createProfileIndex() const;
     int guestProfileIndex() const;

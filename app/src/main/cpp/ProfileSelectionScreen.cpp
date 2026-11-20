@@ -1134,7 +1134,6 @@ bool ProfileSelectionScreen::createProfile(const std::string& name, bool female)
         cleaned.find('\r') != std::string::npos) {
         return false;
     }
-    if (!saveProfile(cleaned, female)) return false;
     profileName_ = std::move(cleaned);
     profileFemale_ = female;
     activeProfile_ = 0;
@@ -1166,30 +1165,6 @@ void ProfileSelectionScreen::loadProfile() {
     profileFemale_ = gender == 'F';
     activeProfile_ = -1;
     selectedProfile_ = -1;
-}
-
-bool ProfileSelectionScreen::saveProfile(const std::string& name, bool female) const {
-    if (storagePath_.empty()) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag,
-                            "Cannot persist profile: app storage path is empty");
-        return false;
-    }
-    const std::string path = storagePath_ + "/xenon-profile.dat";
-    FILE* file = std::fopen(path.c_str(), "wb");
-    if (!file) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag,
-                            "Cannot open profile storage for writing: %s", path.c_str());
-        return false;
-    }
-    const int written = std::fprintf(file, "XENON_PROFILE_V1\n%c\n%s\n",
-                                     female ? 'F' : 'M', name.c_str());
-    const int closeResult = std::fclose(file);
-    if (written < 0 || closeResult != 0) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag,
-                            "Cannot persist the profile: %s", path.c_str());
-        return false;
-    }
-    return true;
 }
 
 } // namespace xenon
