@@ -985,14 +985,61 @@ struct AppState {
         }
     }
 
-    void handleCreatedProfile(const std::string& name, bool female) {
-        if (screen != Screen::ProfileSelect) return;
+    bool handleCreatedProfile(const std::string& name, bool female) {
+        if (screen != Screen::ProfileSelect) return false;
         if (profileSelection.createProfile(name, female)) {
             screen = Screen::Home;
+            return true;
         } else {
             __android_log_print(ANDROID_LOG_ERROR, "Xenon",
                                 "Profile creation failed; check the profile name and storage");
+            return false;
         }
+    }
+
+    void notifyProfileCreationResult(bool success, const char* message) {
+        if (!activity || !activity->vm || !activity->clazz) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Cannot report profile result: Android activity is unavailable");
+            return;
+        }
+        JNIEnv* env = nullptr;
+        bool attached = false;
+        jint status = activity->vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+        if (status == JNI_EDETACHED) {
+            if (activity->vm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+                __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                    "Cannot attach to Android VM to report profile result");
+                return;
+            }
+            attached = true;
+        } else if (status != JNI_OK) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Cannot access Android VM to report profile result");
+            return;
+        }
+
+        jclass activityClass = env->GetObjectClass(activity->clazz);
+        jmethodID resultMethod = activityClass
+            ? env->GetMethodID(activityClass, "onProfileCreationResult",
+                               "(ZLjava/lang/String;)V") : nullptr;
+        jstring javaMessage = env->NewStringUTF(message);
+        if (resultMethod && javaMessage) {
+            env->CallVoidMethod(activity->clazz, resultMethod,
+                                success ? JNI_TRUE : JNI_FALSE, javaMessage);
+        }
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Android profile result callback raised an exception");
+        } else if (!resultMethod || !javaMessage) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Android profile result callback is unavailable");
+        }
+        if (javaMessage) env->DeleteLocalRef(javaMessage);
+        if (activityClass) env->DeleteLocalRef(activityClass);
+        if (attached) activity->vm->DetachCurrentThread();
     }
 
     void handleControllerMotion(const AInputEvent* event) {
@@ -1075,12 +1122,12 @@ int32_t onInputEvent(android_app* app, AInputEvent* event) {
 
 } // namespace
 
-extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_xboxemulator_XenonActivity_nativeOnProfileCreated(
     JNIEnv* env, jobject, jstring profileName, jboolean female) {
-    if (!profileName) return;
+    if (!profileName) return JNI_FALSE;
     const char* utfName = env->GetStringUTFChars(profileName, nullptr);
-    if (!utfName) return;
+    if (!utfName) return JNI_FALSE;
     try {
         std::lock_guard<std::mutex> lock(pendingProfile.mutex);
         pendingProfile.name = utfName;
@@ -1090,9 +1137,10 @@ Java_com_xboxemulator_XenonActivity_nativeOnProfileCreated(
         env->ReleaseStringUTFChars(profileName, utfName);
         __android_log_print(ANDROID_LOG_ERROR, "Xenon",
                             "Unable to queue the new profile: %s", error.what());
-        return;
+        return JNI_FALSE;
     }
     env->ReleaseStringUTFChars(profileName, utfName);
+    return JNI_TRUE;
 }
 
 void android_main(android_app* app) {
@@ -1113,12 +1161,17 @@ void android_main(android_app* app) {
         std::string createdName;
         bool createdFemale = false;
         if (takePendingProfile(createdName, createdFemale)) {
+            bool created = false;
+            const char* message =
+                "Não foi possível salvar o perfil. Verifique o espaço disponível e tente novamente.";
             try {
-                state.handleCreatedProfile(createdName, createdFemale);
+                created = state.handleCreatedProfile(createdName, createdFemale);
             } catch (const std::exception& error) {
                 __android_log_print(ANDROID_LOG_ERROR, "Xenon",
                                     "Profile creation failed: %s", error.what());
+                message = "Ocorreu um erro ao criar o perfil. Tente novamente.";
             }
+            state.notifyProfileCreationResult(created, created ? "" : message);
         }
         if (state.initialized) state.draw();
     }
