@@ -1121,7 +1121,6 @@ ProfileInputAction ProfileSelectionScreen::selectedAction() const {
 }
 
 bool ProfileSelectionScreen::createProfile(const std::string& name, bool female) {
-    if (hasProfile()) return false;
     std::string cleaned = name;
     cleaned.erase(std::remove_if(cleaned.begin(), cleaned.end(),
                                  [](unsigned char ch) {

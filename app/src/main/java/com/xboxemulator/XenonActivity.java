@@ -16,10 +16,8 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
-import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
@@ -69,74 +67,82 @@ public class XenonActivity extends NativeActivity {
                 return;
             }
 
-            int padding = dp(24);
+            int padding = dp(16);
             LinearLayout content = new LinearLayout(this);
             content.setOrientation(LinearLayout.VERTICAL);
-            content.setPadding(padding, padding, padding, dp(20));
-            content.setBackground(roundedBackground(Color.WHITE, dp(24), Color.TRANSPARENT));
-            content.setElevation(dp(18));
+            content.setPadding(padding, dp(10), padding, dp(10));
+            content.setBackground(roundedBackground(Color.WHITE, dp(20), Color.TRANSPARENT));
+            content.setElevation(dp(14));
 
             TextView eyebrow = new TextView(this);
-            eyebrow.setText("XENON  /  CONTA");
-            eyebrow.setTextSize(11);
+            eyebrow.setText("XENON  /  NOVO PERFIL");
+            eyebrow.setTextSize(10);
             eyebrow.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             eyebrow.setTextColor(Color.rgb(28, 138, 72));
             content.addView(eyebrow);
 
             TextView title = new TextView(this);
-            title.setText("Crie seu perfil");
-            title.setTextSize(26);
+            title.setText("Vamos criar sua conta");
+            title.setTextSize(19);
             title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             title.setTextColor(Color.rgb(24, 31, 27));
             LinearLayout.LayoutParams titleParams = wrapParams();
-            titleParams.topMargin = dp(8);
+            titleParams.topMargin = dp(2);
             content.addView(title, titleParams);
 
             TextView subtitle = new TextView(this);
-            subtitle.setText("Escolha um nome e personalize seu avatar.");
-            subtitle.setTextSize(14);
+            subtitle.setText("Defina um nome e escolha seu avatar.");
+            subtitle.setTextSize(11);
             subtitle.setTextColor(Color.rgb(105, 115, 108));
             LinearLayout.LayoutParams subtitleParams = wrapParams();
-            subtitleParams.topMargin = dp(5);
+            subtitleParams.topMargin = dp(1);
             content.addView(subtitle, subtitleParams);
 
-            TextView nameLabel = label("NOME DA CONTA");
-            LinearLayout.LayoutParams labelParams = wrapParams();
-            labelParams.topMargin = dp(24);
-            content.addView(nameLabel, labelParams);
+            LinearLayout formRow = new LinearLayout(this);
+            formRow.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout.LayoutParams formParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(82));
+            formParams.topMargin = dp(8);
+            content.addView(formRow, formParams);
+
+            LinearLayout nameColumn = new LinearLayout(this);
+            nameColumn.setOrientation(LinearLayout.VERTICAL);
+            formRow.addView(nameColumn, new LinearLayout.LayoutParams(0, -1, 1));
+            nameColumn.addView(label("NOME DA CONTA"));
 
             nameInput = new EditText(this);
             nameInput.setSingleLine(true);
-            nameInput.setTextSize(16);
+            nameInput.setTextSize(14);
             nameInput.setTextColor(Color.rgb(24, 31, 27));
             nameInput.setHintTextColor(Color.rgb(145, 153, 148));
-            nameInput.setHint("Como devemos chamar você?");
+            nameInput.setHint("Digite seu nome");
             nameInput.setInputType(InputType.TYPE_CLASS_TEXT
                     | InputType.TYPE_TEXT_FLAG_CAP_WORDS
                     | InputType.TYPE_TEXT_VARIATION_PERSON_NAME);
             nameInput.setFilters(new InputFilter[] {new InputFilter.LengthFilter(32)});
-            nameInput.setPadding(dp(16), 0, dp(16), 0);
+            nameInput.setPadding(dp(12), 0, dp(12), 0);
             nameInput.setBackground(roundedBackground(
-                    Color.rgb(246, 248, 246), dp(14), Color.rgb(225, 230, 226)));
-            LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, dp(54));
-            inputParams.topMargin = dp(9);
-            content.addView(nameInput, inputParams);
+                    Color.rgb(246, 248, 246), dp(12), Color.rgb(225, 230, 226)));
+            LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(-1, dp(42));
+            inputParams.topMargin = dp(5);
+            nameColumn.addView(nameInput, inputParams);
 
-            TextView genderLabel = label("AVATAR");
-            LinearLayout.LayoutParams genderLabelParams = wrapParams();
-            genderLabelParams.topMargin = dp(22);
-            content.addView(genderLabel, genderLabelParams);
+            LinearLayout genderColumn = new LinearLayout(this);
+            genderColumn.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams genderColumnParams =
+                    new LinearLayout.LayoutParams(0, -1, 1.15f);
+            genderColumnParams.leftMargin = dp(16);
+            formRow.addView(genderColumn, genderColumnParams);
+            genderColumn.addView(label("ESCOLHA O AVATAR"));
 
             LinearLayout genderOptions = new LinearLayout(this);
             genderOptions.setOrientation(LinearLayout.HORIZONTAL);
-            LinearLayout.LayoutParams optionsParams = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, dp(82));
-            optionsParams.topMargin = dp(9);
-            content.addView(genderOptions, optionsParams);
+            LinearLayout.LayoutParams optionsParams = new LinearLayout.LayoutParams(-1, dp(56));
+            optionsParams.topMargin = dp(5);
+            genderColumn.addView(genderOptions, optionsParams);
 
-            LinearLayout maleOption = createGenderOption("M", "Masculino", "Avatar masculino");
-            LinearLayout femaleOption = createGenderOption("F", "Feminino", "Avatar feminino");
+            LinearLayout maleOption = createGenderOption("M", "Masculino");
+            LinearLayout femaleOption = createGenderOption("F", "Feminino");
             boolean[] selectedFemale = {false};
             Runnable updateGenderOptions = () -> {
                 styleGenderOption(maleOption, !selectedFemale[0]);
@@ -154,22 +160,22 @@ public class XenonActivity extends NativeActivity {
                     new LinearLayout.LayoutParams(0, -1, 1);
             genderOptions.addView(maleOption, optionParams);
             LinearLayout.LayoutParams secondOptionParams = new LinearLayout.LayoutParams(0, -1, 1);
-            secondOptionParams.leftMargin = dp(12);
+            secondOptionParams.leftMargin = dp(8);
             genderOptions.addView(femaleOption, secondOptionParams);
             updateGenderOptions.run();
 
             profileError = new TextView(this);
-            profileError.setTextSize(13);
+            profileError.setTextSize(12);
             profileError.setTextColor(Color.rgb(178, 45, 45));
             profileError.setVisibility(View.GONE);
             LinearLayout.LayoutParams errorParams = wrapParams();
-            errorParams.topMargin = dp(10);
+            errorParams.topMargin = dp(3);
             content.addView(profileError, errorParams);
 
             LinearLayout actions = new LinearLayout(this);
             actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
             LinearLayout.LayoutParams actionsParams = wrapParams();
-            actionsParams.topMargin = dp(20);
+            actionsParams.topMargin = dp(5);
             content.addView(actions, actionsParams);
 
             TextView cancelButton = actionButton("Cancelar", false);
@@ -181,13 +187,8 @@ public class XenonActivity extends NativeActivity {
             actions.addView(createButton, createParams);
             createButton.setOnClickListener(view -> submitProfile(selectedFemale[0]));
 
-            ScrollView scrollContent = new ScrollView(this);
-            scrollContent.setFillViewport(true);
-            scrollContent.setClipToPadding(false);
-            scrollContent.addView(content);
-
             profileDialog = new Dialog(this);
-            profileDialog.setContentView(scrollContent);
+            profileDialog.setContentView(content);
             profileDialog.setCancelable(true);
             profileDialog.setOnDismissListener(dialog -> {
                 profileDialog = null;
@@ -200,27 +201,18 @@ public class XenonActivity extends NativeActivity {
             if (dialogWindow != null) {
                 dialogWindow.setBackgroundDrawableResource(android.R.color.transparent);
                 dialogWindow.setSoftInputMode(
-                        WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+                        WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+                                | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
                 int screenWidth = getResources().getDisplayMetrics().widthPixels;
                 int screenHeight = getResources().getDisplayMetrics().heightPixels;
-                int dialogWidth = Math.min(dp(560), (int) (screenWidth * 0.90f));
-                int dialogHeight = Math.min(dp(520), (int) (screenHeight * 0.88f));
+                int dialogWidth = Math.min(dp(720), (int) (screenWidth * 0.92f));
+                int dialogHeight = Math.min(dp(230), (int) (screenHeight * 0.90f));
                 dialogWindow.setLayout(dialogWidth, dialogHeight);
                 WindowManager.LayoutParams attributes = dialogWindow.getAttributes();
                 attributes.dimAmount = 0.62f;
                 dialogWindow.setAttributes(attributes);
             }
-            EditText profileNameInput = nameInput;
-            profileNameInput.post(() -> {
-                if (profileDialog == null || !profileDialog.isShowing()) return;
-                profileNameInput.requestFocus();
-                InputMethodManager inputManager =
-                        (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-                if (inputManager != null) {
-                    inputManager.showSoftInput(
-                            profileNameInput, InputMethodManager.SHOW_IMPLICIT);
-                }
-            });
+            nameInput.requestFocus();
         });
     }
 
@@ -272,40 +264,27 @@ public class XenonActivity extends NativeActivity {
         }
     }
 
-    private LinearLayout createGenderOption(String marker, String title, String subtitle) {
+    private LinearLayout createGenderOption(String marker, String title) {
         LinearLayout option = new LinearLayout(this);
-        option.setGravity(Gravity.CENTER_VERTICAL);
-        option.setOrientation(LinearLayout.HORIZONTAL);
-        option.setPadding(dp(12), dp(10), dp(8), dp(10));
+        option.setGravity(Gravity.CENTER);
+        option.setOrientation(LinearLayout.VERTICAL);
 
         TextView icon = new TextView(this);
         icon.setText(marker);
-        icon.setTextSize(17);
+        icon.setTextSize(14);
         icon.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         icon.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(38), dp(38));
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(24), dp(24));
         option.addView(icon, iconParams);
-
-        LinearLayout labels = new LinearLayout(this);
-        labels.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams labelsParams = new LinearLayout.LayoutParams(0, -2, 1);
-        labelsParams.leftMargin = dp(10);
-        option.addView(labels, labelsParams);
 
         TextView titleView = new TextView(this);
         titleView.setText(title);
-        titleView.setTextSize(14);
+        titleView.setTextSize(12);
         titleView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        labels.addView(titleView);
-
-        TextView subtitleView = new TextView(this);
-        subtitleView.setText(subtitle);
-        subtitleView.setTextSize(11);
-        LinearLayout.LayoutParams subtitleParams = wrapParams();
-        subtitleParams.topMargin = dp(3);
-        labels.addView(subtitleView, subtitleParams);
-
-        option.setTag(new View[] {icon, titleView, subtitleView});
+        LinearLayout.LayoutParams titleParams = wrapParams();
+        titleParams.topMargin = dp(3);
+        option.addView(titleView, titleParams);
+        option.setTag(new View[] {icon, titleView});
         option.setFocusable(true);
         option.setClickable(true);
         return option;
@@ -322,7 +301,6 @@ public class XenonActivity extends NativeActivity {
                 selected ? Color.rgb(38, 148, 75) : Color.rgb(232, 237, 233),
                 dp(19), Color.TRANSPARENT));
         ((TextView) content[1]).setTextColor(Color.rgb(31, 43, 35));
-        ((TextView) content[2]).setTextColor(Color.rgb(105, 117, 108));
         option.setSelected(selected);
         option.setContentDescription(((TextView) content[1]).getText()
                 + (selected ? ", selecionado" : ""));
@@ -344,7 +322,7 @@ public class XenonActivity extends NativeActivity {
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         button.setGravity(Gravity.CENTER);
         button.setPadding(dp(18), 0, dp(18), 0);
-        button.setMinHeight(dp(48));
+        button.setMinHeight(dp(40));
         button.setBackground(roundedBackground(
                 primary ? Color.rgb(31, 145, 70) : Color.rgb(242, 245, 242),
                 dp(14), primary ? Color.TRANSPARENT : Color.rgb(230, 234, 230)));
