@@ -212,8 +212,9 @@ uniform float verticalScale;
 varying vec3 surfaceNormal;
 varying vec2 uv;
 void main() {
-    float c = cos(angle);
-    float s = sin(angle);
+    float facingAngle = angle + 3.14159265;
+    float c = cos(facingAngle);
+    float s = sin(facingAngle);
     vec3 p = vec3(c * position.x + s * position.z,
                   position.y * verticalScale,
                   -s * position.x + c * position.z);
