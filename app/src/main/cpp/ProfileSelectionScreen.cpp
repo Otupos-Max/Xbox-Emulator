@@ -25,6 +25,11 @@ struct Vertex {
     float texcoord[2];
 };
 
+struct TextVertex {
+    float position[2];
+    float texcoord[2];
+};
+
 struct Color {
     float r;
     float g;
@@ -92,14 +97,26 @@ void drawRect(const ProfileDrawApi& api, float x, float y, float width, float he
              color.r, color.g, color.b, color.a);
 }
 
-void drawText(const ProfileDrawApi& api, const char* text, float x, float y,
-              float scale, const Color& color) {
-    api.text(api.context, text, x, y, scale,
-             color.r, color.g, color.b, color.a);
-}
-
-float centeredTextX(const char* text, float center, float scale) {
-    return center - static_cast<float>(std::strlen(text)) * 6.f * scale * .5f;
+uint32_t nextCodepoint(const char*& text) {
+    const unsigned char first = static_cast<unsigned char>(*text++);
+    if (first < 0x80u) return first;
+    if ((first & 0xE0u) == 0xC0u && *text) {
+        const unsigned char second = static_cast<unsigned char>(*text++);
+        return ((first & 0x1Fu) << 6) | (second & 0x3Fu);
+    }
+    if ((first & 0xF0u) == 0xE0u && text[0] && text[1]) {
+        const unsigned char second = static_cast<unsigned char>(*text++);
+        const unsigned char third = static_cast<unsigned char>(*text++);
+        return ((first & 0x0Fu) << 12) | ((second & 0x3Fu) << 6) | (third & 0x3Fu);
+    }
+    if ((first & 0xF8u) == 0xF0u && text[0] && text[1] && text[2]) {
+        const unsigned char second = static_cast<unsigned char>(*text++);
+        const unsigned char third = static_cast<unsigned char>(*text++);
+        const unsigned char fourth = static_cast<unsigned char>(*text++);
+        return ((first & 0x07u) << 18) | ((second & 0x3Fu) << 12) |
+               ((third & 0x3Fu) << 6) | (fourth & 0x3Fu);
+    }
+    return '?';
 }
 
 } // namespace
@@ -109,6 +126,7 @@ bool ProfileSelectionScreen::initialize(AAssetManager* assets,
     storagePath_ = storagePath;
     loadSelection();
     if (!createPrograms()) return false;
+    if (!loadFont(assets)) return false;
     if (!loadModel(assets, "profile_models/male.xmesh", male_)) return false;
     if (!loadModel(assets, "profile_models/female.xmesh", female_)) return false;
     return true;
@@ -128,12 +146,23 @@ void ProfileSelectionScreen::shutdown() {
     if (backgroundBuffer_ != 0) glDeleteBuffers(1, &backgroundBuffer_);
     if (backgroundProgram_ != 0) glDeleteProgram(backgroundProgram_);
     if (modelProgram_ != 0) glDeleteProgram(modelProgram_);
+    if (textBuffer_ != 0) glDeleteBuffers(1, &textBuffer_);
+    if (fontTexture_ != 0) glDeleteTextures(1, &fontTexture_);
+    if (textProgram_ != 0) glDeleteProgram(textProgram_);
 
     male_ = {};
     female_ = {};
     backgroundBuffer_ = 0;
     backgroundProgram_ = 0;
     modelProgram_ = 0;
+    textBuffer_ = 0;
+    fontTexture_ = 0;
+    textProgram_ = 0;
+    fontAtlasWidth_ = 0;
+    fontAtlasHeight_ = 0;
+    fontEmSize_ = 0;
+    textBufferCapacity_ = 0;
+    glyphs_.clear();
     hasPreviousFrame_ = false;
 }
 
@@ -150,24 +179,25 @@ varying vec2 uv;
 uniform float time;
 void main() {
     float y = 1.0 - uv.y;
-    vec3 base = mix(vec3(0.94, 0.96, 0.95), vec3(0.78, 0.83, 0.81), y * 0.74);
-    float curve = 0.73 + 0.060 * sin(uv.x * 5.2 + time * 0.16)
-                        + 0.028 * sin(uv.x * 10.1 - time * 0.11);
-    float broadWave = smoothstep(curve - 0.012, curve + 0.018, y);
-    float upperWave = smoothstep(curve - 0.090, curve - 0.064, y);
-    float innerWave = smoothstep(curve + 0.045, curve + 0.078, y);
-    float shadow = exp(-abs(y - curve - 0.022) * 70.0) * 0.13;
-    float glow = exp(-abs(y - curve + 0.010) * 120.0) * 0.20;
-    vec3 green = mix(vec3(0.45, 0.68, 0.55), vec3(0.10, 0.43, 0.24),
-                     clamp((y - curve + 0.08) * 6.0, 0.0, 1.0));
-    base = mix(base, vec3(0.13, 0.38, 0.23), broadWave * 0.20);
-    base = mix(base, green, upperWave * 0.42);
-    base = mix(base, vec3(0.11, 0.49, 0.26), innerWave * 0.46);
-    base += vec3(0.025, 0.10, 0.04) * glow;
-    base *= 1.0 - shadow;
-    float reflection = exp(-abs(y - 0.86 - 0.018 * sin(uv.x * 6.0 + time * 0.12)) * 22.0);
-    base += vec3(0.12, 0.30, 0.18) * reflection * 0.055;
-    base += vec3(0.018, 0.025, 0.022) * (1.0 - y) * 0.35;
+    vec3 base = mix(vec3(0.96, 0.97, 0.96), vec3(0.84, 0.88, 0.86),
+                    smoothstep(0.0, 1.0, y) * 0.64);
+    float wave = 0.825 + 0.045 * sin(uv.x * 3.15 - time * 0.10)
+                       + 0.012 * sin(uv.x * 6.3 + time * 0.07);
+    float upperWave = 0.775 + 0.022 * sin(uv.x * 2.85 + time * 0.08);
+    float lowerFill = smoothstep(wave - 0.012, wave + 0.024, y);
+    float waveBand = exp(-abs(y - wave) * 145.0);
+    float upperBand = exp(-abs(y - upperWave) * 105.0);
+    float softShadow = exp(-abs(y - wave - 0.018) * 58.0);
+    float softGlow = exp(-abs(y - wave + 0.008) * 72.0);
+    base = mix(base, vec3(0.39, 0.64, 0.48), lowerFill * 0.60);
+    base = mix(base, vec3(0.18, 0.48, 0.30), lowerFill *
+               smoothstep(wave + 0.035, 0.99, y) * 0.32);
+    base += vec3(0.045, 0.13, 0.067) * waveBand * 0.30;
+    base += vec3(0.16, 0.30, 0.20) * upperBand * 0.13;
+    base *= 1.0 - softShadow * 0.07;
+    base += vec3(0.04, 0.13, 0.065) * softGlow * 0.10;
+    float reflection = exp(-abs(y - wave - 0.075) * 25.0);
+    base += vec3(0.11, 0.20, 0.14) * reflection * 0.028;
     gl_FragColor = vec4(base, 1.0);
 })";
     static const char* modelVertex = R"(precision highp float;
@@ -178,7 +208,6 @@ uniform vec2 viewport;
 uniform vec2 center;
 uniform float scale;
 uniform float angle;
-uniform float time;
 uniform float verticalScale;
 varying vec3 surfaceNormal;
 varying vec2 uv;
@@ -188,7 +217,6 @@ void main() {
     vec3 p = vec3(c * position.x + s * position.z,
                   position.y * verticalScale,
                   -s * position.x + c * position.z);
-    p.y += sin(time * 1.4) * 0.010 * scale * abs(verticalScale);
     vec2 pixel = center + vec2(p.x, -p.y) * scale;
     vec2 clip = pixel / viewport * 2.0 - 1.0;
     gl_Position = vec4(clip.x, -clip.y, clamp(p.z * scale * 0.004, -0.8, 0.8), 1.0);
@@ -210,10 +238,50 @@ void main() {
     color += vec3(0.06, 0.19, 0.10) * rim * 0.28;
     gl_FragColor = vec4(color, texel.a * alpha);
 })";
+    static const char* textVertex = R"(precision highp float;
+attribute vec2 position;
+attribute vec2 texcoord;
+uniform vec2 viewport;
+varying vec2 uv;
+void main() {
+    vec2 normalized = position / viewport * 2.0 - 1.0;
+    gl_Position = vec4(normalized.x, -normalized.y, 0.0, 1.0);
+    uv = texcoord;
+})";
+    static const char* textFragment = R"(precision mediump float;
+uniform sampler2D atlas;
+uniform vec4 color;
+varying vec2 uv;
+void main() {
+    float coverage = texture2D(atlas, uv).r;
+    gl_FragColor = vec4(color.rgb, color.a * coverage);
+})";
 
     backgroundProgram_ = linkProgram(backgroundVertex, backgroundFragment);
     modelProgram_ = linkProgram(modelVertex, modelFragment);
-    if (backgroundProgram_ == 0 || modelProgram_ == 0) return false;
+    const GLuint textVs = compileShader(GL_VERTEX_SHADER, textVertex);
+    const GLuint textFs = compileShader(GL_FRAGMENT_SHADER, textFragment);
+    if (textVs != 0 && textFs != 0) {
+        textProgram_ = glCreateProgram();
+        glAttachShader(textProgram_, textVs);
+        glAttachShader(textProgram_, textFs);
+        glBindAttribLocation(textProgram_, 0, "position");
+        glBindAttribLocation(textProgram_, 1, "texcoord");
+        glLinkProgram(textProgram_);
+        GLint linked = GL_FALSE;
+        glGetProgramiv(textProgram_, GL_LINK_STATUS, &linked);
+        if (linked != GL_TRUE) {
+            char log[512] = {};
+            glGetProgramInfoLog(textProgram_, sizeof(log), nullptr, log);
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                                "Profile font shader link failed: %s", log);
+            glDeleteProgram(textProgram_);
+            textProgram_ = 0;
+        }
+    }
+    if (textVs != 0) glDeleteShader(textVs);
+    if (textFs != 0) glDeleteShader(textFs);
+    if (backgroundProgram_ == 0 || modelProgram_ == 0 || textProgram_ == 0) return false;
 
     backgroundPosition_ = glGetAttribLocation(backgroundProgram_, "position");
     backgroundTime_ = glGetUniformLocation(backgroundProgram_, "time");
@@ -224,16 +292,104 @@ void main() {
     modelCenter_ = glGetUniformLocation(modelProgram_, "center");
     modelScale_ = glGetUniformLocation(modelProgram_, "scale");
     modelAngle_ = glGetUniformLocation(modelProgram_, "angle");
-    modelTime_ = glGetUniformLocation(modelProgram_, "time");
     modelAlpha_ = glGetUniformLocation(modelProgram_, "alpha");
     modelVerticalScale_ = glGetUniformLocation(modelProgram_, "verticalScale");
     modelTexture_ = glGetUniformLocation(modelProgram_, "modelTexture");
+    textPosition_ = glGetAttribLocation(textProgram_, "position");
+    textTexcoord_ = glGetAttribLocation(textProgram_, "texcoord");
+    textViewport_ = glGetUniformLocation(textProgram_, "viewport");
+    textColor_ = glGetUniformLocation(textProgram_, "color");
+    textTexture_ = glGetUniformLocation(textProgram_, "atlas");
 
     static const float quad[] = {0.f, 0.f, 1.f, 0.f, 0.f, 1.f, 1.f, 1.f};
     glGenBuffers(1, &backgroundBuffer_);
-    if (backgroundBuffer_ == 0) return false;
+    glGenBuffers(1, &textBuffer_);
+    if (backgroundBuffer_ == 0 || textBuffer_ == 0) return false;
     glBindBuffer(GL_ARRAY_BUFFER, backgroundBuffer_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+    if (glGetError() != GL_NO_ERROR) return false;
+    return true;
+}
+
+bool ProfileSelectionScreen::loadFont(AAssetManager* assets) {
+    AAsset* asset = assets
+        ? AAssetManager_open(assets, "profile_models/profile_font.xfont", AASSET_MODE_BUFFER)
+        : nullptr;
+    if (!asset) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Profile font atlas asset is missing");
+        return false;
+    }
+
+    const off64_t assetLength = AAsset_getLength64(asset);
+    if (assetLength < 20) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Profile font atlas is truncated");
+        AAsset_close(asset);
+        return false;
+    }
+    std::vector<uint8_t> bytes(static_cast<size_t>(assetLength));
+    size_t bytesRead = 0;
+    while (bytesRead < bytes.size()) {
+        const int result = AAsset_read(asset, bytes.data() + bytesRead, bytes.size() - bytesRead);
+        if (result <= 0) break;
+        bytesRead += static_cast<size_t>(result);
+    }
+    AAsset_close(asset);
+    if (bytesRead != bytes.size() || std::memcmp(bytes.data(), "XFNT", 4) != 0) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Invalid profile font atlas");
+        return false;
+    }
+
+    uint32_t glyphCount = 0;
+    std::memcpy(&fontAtlasWidth_, bytes.data() + 4, sizeof(fontAtlasWidth_));
+    std::memcpy(&fontAtlasHeight_, bytes.data() + 8, sizeof(fontAtlasHeight_));
+    std::memcpy(&fontEmSize_, bytes.data() + 12, sizeof(fontEmSize_));
+    std::memcpy(&glyphCount, bytes.data() + 16, sizeof(glyphCount));
+    const uint64_t expectedLength = 20ull + static_cast<uint64_t>(glyphCount) * 20ull +
+                                    static_cast<uint64_t>(fontAtlasWidth_) * fontAtlasHeight_;
+    if (fontAtlasWidth_ == 0 || fontAtlasHeight_ == 0 || fontAtlasWidth_ > 2048 ||
+        fontAtlasHeight_ > 2048 || fontEmSize_ == 0 || glyphCount == 0 ||
+        glyphCount > 256 || expectedLength != bytes.size()) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                            "Unsupported or truncated profile font atlas");
+        return false;
+    }
+
+    glyphs_.resize(glyphCount);
+    size_t offset = 20;
+    for (Glyph& glyph : glyphs_) {
+        std::memcpy(&glyph.codepoint, bytes.data() + offset, sizeof(glyph.codepoint));
+        std::memcpy(&glyph.x, bytes.data() + offset + 4, sizeof(glyph.x));
+        std::memcpy(&glyph.y, bytes.data() + offset + 6, sizeof(glyph.y));
+        std::memcpy(&glyph.width, bytes.data() + offset + 8, sizeof(glyph.width));
+        std::memcpy(&glyph.height, bytes.data() + offset + 10, sizeof(glyph.height));
+        std::memcpy(&glyph.bearingX, bytes.data() + offset + 12, sizeof(glyph.bearingX));
+        std::memcpy(&glyph.bearingY, bytes.data() + offset + 14, sizeof(glyph.bearingY));
+        std::memcpy(&glyph.advance, bytes.data() + offset + 16, sizeof(glyph.advance));
+        if (glyph.x + glyph.width > fontAtlasWidth_ ||
+            glyph.y + glyph.height > fontAtlasHeight_) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                                "Profile font glyph is outside the atlas");
+            return false;
+        }
+        offset += 20;
+    }
+
+    glGenTextures(1, &fontTexture_);
+    glBindTexture(GL_TEXTURE_2D, fontTexture_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE,
+                 static_cast<GLsizei>(fontAtlasWidth_), static_cast<GLsizei>(fontAtlasHeight_),
+                 0, GL_LUMINANCE, GL_UNSIGNED_BYTE,
+                 bytes.data() + 20 + static_cast<size_t>(glyphCount) * 20);
+    if (fontTexture_ == 0 || glGetError() != GL_NO_ERROR) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                            "Unable to upload the profile font atlas");
+        return false;
+    }
     return true;
 }
 
@@ -387,15 +543,16 @@ void ProfileSelectionScreen::drawBackground(float elapsedSeconds) {
 }
 
 void ProfileSelectionScreen::drawModel(const Model& model, float centerX, float centerY,
-                                       float scale, float angle, float elapsedSeconds,
-                                       float alpha, float verticalScale) {
+                                       float scale, float angle, float alpha,
+                                       float verticalScale) {
     if (modelProgram_ == 0 || model.batches.empty() || model.texture == 0) return;
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
     glUseProgram(modelProgram_);
     glUniform2f(modelViewport_, 1280.f, 720.f);
     glUniform2f(modelCenter_, centerX, centerY);
     glUniform1f(modelScale_, scale);
     glUniform1f(modelAngle_, angle);
-    glUniform1f(modelTime_, elapsedSeconds);
     glUniform1f(modelAlpha_, alpha);
     glUniform1f(modelVerticalScale_, verticalScale);
     glUniform1i(modelTexture_, 0);
@@ -418,6 +575,88 @@ void ProfileSelectionScreen::drawModel(const Model& model, float centerX, float 
     }
 }
 
+void ProfileSelectionScreen::drawText(const char* text, float x, float y, float scale,
+                                      float r, float g, float b, float a) {
+    if (!text || textProgram_ == 0 || fontTexture_ == 0 || fontEmSize_ == 0) return;
+    const float pixelScale = scale * 5.f / static_cast<float>(fontEmSize_);
+    const float baseline = y + pixelScale * 47.f;
+    float penX = x;
+    std::vector<TextVertex> vertices;
+    vertices.reserve(std::strlen(text) * 6);
+
+    while (*text) {
+        const uint32_t codepoint = nextCodepoint(text);
+        auto glyph = std::find_if(glyphs_.begin(), glyphs_.end(),
+                                  [codepoint](const Glyph& candidate) {
+                                      return candidate.codepoint == codepoint;
+                                  });
+        if (glyph == glyphs_.end()) {
+            glyph = std::find_if(glyphs_.begin(), glyphs_.end(),
+                                 [](const Glyph& candidate) {
+                                     return candidate.codepoint == '?';
+                                 });
+        }
+        if (glyph == glyphs_.end()) continue;
+
+        if (glyph->width > 0 && glyph->height > 0) {
+            const float left = penX + glyph->bearingX * pixelScale;
+            const float top = baseline + glyph->bearingY * pixelScale;
+            const float right = left + glyph->width * pixelScale;
+            const float bottom = top + glyph->height * pixelScale;
+            const float u0 = static_cast<float>(glyph->x) / fontAtlasWidth_;
+            const float v0 = static_cast<float>(glyph->y) / fontAtlasHeight_;
+            const float u1 = static_cast<float>(glyph->x + glyph->width) / fontAtlasWidth_;
+            const float v1 = static_cast<float>(glyph->y + glyph->height) / fontAtlasHeight_;
+            vertices.insert(vertices.end(), {
+                {{left, top}, {u0, v0}}, {{right, top}, {u1, v0}},
+                {{left, bottom}, {u0, v1}},
+                {{left, bottom}, {u0, v1}}, {{right, top}, {u1, v0}},
+                {{right, bottom}, {u1, v1}}
+            });
+        }
+        penX += glyph->advance * pixelScale;
+    }
+
+    if (vertices.empty()) return;
+    glDisable(GL_DEPTH_TEST);
+    glUseProgram(textProgram_);
+    glUniform2f(textViewport_, 1280.f, 720.f);
+    glUniform4f(textColor_, r, g, b, a);
+    glUniform1i(textTexture_, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, fontTexture_);
+    glBindBuffer(GL_ARRAY_BUFFER, textBuffer_);
+    const size_t byteSize = vertices.size() * sizeof(TextVertex);
+    if (byteSize > textBufferCapacity_) {
+        textBufferCapacity_ = byteSize;
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(textBufferCapacity_),
+                     nullptr, GL_STREAM_DRAW);
+    }
+    glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(byteSize), vertices.data());
+    glVertexAttribPointer(static_cast<GLuint>(textPosition_), 2, GL_FLOAT, GL_FALSE,
+                          sizeof(TextVertex), nullptr);
+    glVertexAttribPointer(static_cast<GLuint>(textTexcoord_), 2, GL_FLOAT, GL_FALSE,
+                          sizeof(TextVertex), reinterpret_cast<const void*>(2 * sizeof(float)));
+    glEnableVertexAttribArray(static_cast<GLuint>(textPosition_));
+    glEnableVertexAttribArray(static_cast<GLuint>(textTexcoord_));
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
+}
+
+float ProfileSelectionScreen::textWidth(const char* text, float scale) const {
+    if (!text || fontEmSize_ == 0) return 0.f;
+    const float pixelScale = scale * 5.f / static_cast<float>(fontEmSize_);
+    float width = 0.f;
+    while (*text) {
+        const uint32_t codepoint = nextCodepoint(text);
+        auto glyph = std::find_if(glyphs_.begin(), glyphs_.end(),
+                                  [codepoint](const Glyph& candidate) {
+                                      return candidate.codepoint == codepoint;
+                                  });
+        if (glyph != glyphs_.end()) width += glyph->advance * pixelScale;
+    }
+    return width;
+}
+
 void ProfileSelectionScreen::draw(float width, float height, float elapsedSeconds,
                                   const ProfileDrawApi& api) {
     drawBackground(elapsedSeconds);
@@ -438,13 +677,13 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
     glDepthFunc(GL_LEQUAL);
     glDepthMask(GL_TRUE);
     glClear(GL_DEPTH_BUFFER_BIT);
-    glDepthMask(GL_FALSE);
     const Model& heroModel = selectedProfile_ == 1 || selectedProfile_ == 3 ? female_ : male_;
-    drawModel(heroModel, 305.f, height * .92f + 84.f, 205.f,
-              std::sin(elapsedSeconds * .24f) * .075f, elapsedSeconds, .10f, -0.42f);
-    glDepthMask(GL_TRUE);
-    drawModel(heroModel, 305.f, height * .60f, 232.f,
-              std::sin(elapsedSeconds * .42f) * .11f, elapsedSeconds, 1.f, 1.f);
+    const float modelScale = std::min(height * .30f, 216.f);
+    const float floorLine = height - 68.f;
+    const float modelCenterY = floorLine - modelScale * .995f;
+    const float modelCenterX = width * .235f;
+    const float idleYaw = std::sin(elapsedSeconds * .22f) * .012f;
+    drawModel(heroModel, modelCenterX, modelCenterY, modelScale, idleYaw, 1.f, 1.f);
 
     const float startX = width * .485f;
     const float gap = 11.f;
@@ -452,8 +691,10 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
     const float cardTop = height * .365f;
     const float cardHeight = height * .405f;
     const float titleX = startX;
-    drawText(api, "Escolha um perfil", titleX, height * .105f, 4.35f, kText);
-    drawText(api, "Faça login para continuar", titleX, height * .178f, 2.55f, kMuted);
+    drawText("Escolha um perfil", titleX, height * .105f, 6.f,
+             kText.r, kText.g, kText.b, kText.a);
+    drawText("Faça login para continuar", titleX, height * .178f, 3.45f,
+             kMuted.r, kMuted.g, kMuted.b, kMuted.a);
 
     static const char* names[] = {"Jogador um", "Jogador dois", "Criar perfil", "Convidado"};
     static const char* statuses[] = {"Online", "Online", "Novo perfil", "Offline"};
@@ -465,9 +706,18 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
         const float blend = std::clamp(selectionBlend_[i], 0.f, 1.f);
         const float pulse = .5f + .5f * std::sin(elapsedSeconds * 2.7f);
         drawRect(api, x, cardTop, cardWidth, cardHeight,
-                 {kCard.r, kCard.g, kCard.b, .47f + blend * .24f});
+                 {kCard.r, kCard.g, kCard.b, .87f + blend * .08f});
         if (blend > .01f) {
-            const float edgeAlpha = .42f + .36f * pulse;
+            const float glowAlpha = .09f + .07f * pulse;
+            drawRect(api, x - 10.f, cardTop - 10.f, cardWidth + 20.f, 3.f,
+                     {kGreen.r, kGreen.g, kGreen.b, glowAlpha});
+            drawRect(api, x - 10.f, cardTop + cardHeight + 7.f, cardWidth + 20.f, 3.f,
+                     {kGreen.r, kGreen.g, kGreen.b, glowAlpha});
+            drawRect(api, x - 10.f, cardTop - 7.f, 3.f, cardHeight + 14.f,
+                     {kGreen.r, kGreen.g, kGreen.b, glowAlpha});
+            drawRect(api, x + cardWidth + 7.f, cardTop - 7.f, 3.f, cardHeight + 14.f,
+                     {kGreen.r, kGreen.g, kGreen.b, glowAlpha});
+            const float edgeAlpha = .80f + .18f * pulse;
             drawRect(api, x - 2.f, cardTop - 2.f, cardWidth + 4.f, 2.f,
                      {kGreen.r, kGreen.g, kGreen.b, edgeAlpha});
             drawRect(api, x - 2.f, cardTop + cardHeight, cardWidth + 4.f, 2.f,
@@ -477,7 +727,7 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
             drawRect(api, x + cardWidth, cardTop, 2.f, cardHeight,
                      {kGreen.r, kGreen.g, kGreen.b, edgeAlpha});
             drawRect(api, x + 7.f, cardTop + 7.f, cardWidth - 14.f, 2.f,
-                     {kMint.r, kMint.g, kMint.b, .24f + blend * .25f});
+                     {kMint.r, kMint.g, kMint.b, .4f + blend * .38f});
         }
 
         if (i == 2) {
@@ -489,28 +739,32 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
         } else {
             const Model& model = i == 1 || i == 3 ? female_ : male_;
             const float size = 76.f + blend * 5.f;
-            const float yaw = std::sin(elapsedSeconds * .35f + i) * .08f;
-            drawModel(model, centerX, cardTop + 96.f, size, yaw, elapsedSeconds, 1.f, 1.f);
+            const float yaw = std::sin(elapsedSeconds * .18f) * .009f;
+            drawModel(model, centerX, cardTop + 96.f, size, yaw, 1.f, 1.f);
         }
 
-        const float labelScale = i == 2 ? 1.75f : 1.95f;
-        drawText(api, names[i], centeredTextX(names[i], centerX, labelScale),
-                 cardTop + cardHeight - 80.f, labelScale, blend > .35f ? kGreen : kText);
+        const float labelScale = i == 2 ? 2.65f : 2.9f;
+        const Color labelColor = blend > .35f ? kGreen : kText;
+        drawText(names[i], centerX - textWidth(names[i], labelScale) * .5f,
+                 cardTop + cardHeight - 80.f, labelScale,
+                 labelColor.r, labelColor.g, labelColor.b, labelColor.a);
         const Color statusColor = i == 2 ? kMuted : accents[i];
-        const float statusScale = 1.75f;
+        const float statusScale = 2.25f;
         drawRect(api, centerX - 32.f, cardTop + cardHeight - 48.f, 7.f, 7.f,
                  {statusColor.r, statusColor.g, statusColor.b, .9f});
-        drawText(api, statuses[i], centeredTextX(statuses[i], centerX + 8.f, statusScale),
-                 cardTop + cardHeight - 49.f, statusScale, statusColor);
+        drawText(statuses[i], centerX + 8.f - textWidth(statuses[i], statusScale) * .5f,
+                 cardTop + cardHeight - 49.f, statusScale,
+                 statusColor.r, statusColor.g, statusColor.b, statusColor.a);
     }
 
     glDisable(GL_DEPTH_TEST);
     drawRect(api, 0.f, height - 60.f, width, 60.f, {0.91f, 0.94f, 0.92f, .90f});
     drawRect(api, 0.f, height - 60.f, width, 1.f, {0.20f, 0.38f, 0.28f, .13f});
-    drawText(api, "A  Selecionar", 40.f, height - 38.f, 2.55f, kText);
+    drawText("A  Selecionar", 40.f, height - 38.f, 3.2f,
+             kText.r, kText.g, kText.b, kText.a);
     const char* backText = "B  Voltar";
-    drawText(api, backText, width - 40.f - std::strlen(backText) * 6.f * 2.55f,
-             height - 38.f, 2.55f, kMuted);
+    drawText(backText, width - 40.f - textWidth(backText, 3.2f),
+             height - 38.f, 3.2f, kMuted.r, kMuted.g, kMuted.b, kMuted.a);
 }
 
 ProfileInputAction ProfileSelectionScreen::handleTouch(float x, float y, float width,

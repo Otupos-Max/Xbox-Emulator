@@ -837,12 +837,7 @@ struct AppState {
             auto* target = static_cast<Renderer*>(context);
             target->rect(x, y, width, height, Color{r, g, b, a});
         };
-        static const auto drawText = [](void* context, const char* text, float x, float y,
-                                        float scale, float r, float g, float b, float a) {
-            auto* target = static_cast<Renderer*>(context);
-            target->text(text, x, y, scale, Color{r, g, b, a});
-        };
-        const xenon::ProfileDrawApi api{&renderer, drawRect, drawText};
+        const xenon::ProfileDrawApi api{&renderer, drawRect};
         const float elapsed = std::chrono::duration<float>(
             std::chrono::steady_clock::now() - splashStarted).count();
         profileSelection.draw(static_cast<float>(renderer.width),
