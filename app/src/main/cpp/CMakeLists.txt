@@ -13,7 +13,10 @@ add_library(native_app_glue STATIC
 )
 target_include_directories(native_app_glue PUBLIC ${NATIVE_APP_GLUE_DIR})
 
-add_library(xenon_native SHARED xenon_native.cpp)
+add_library(xenon_native SHARED
+    xenon_native.cpp
+    ProfileSelectionScreen.cpp
+)
 
 # The NDK glue exports ANativeActivity_onCreate from a static library. Without
 # forcing it to be kept, the linker drops it and Android crashes at launch.

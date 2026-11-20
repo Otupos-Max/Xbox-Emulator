@@ -1,5 +1,6 @@
 #include <android_native_app_glue.h>
 #include <android/asset_manager.h>
+#include <android/keycodes.h>
 #include <aaudio/AAudio.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
@@ -7,6 +8,7 @@
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaExtractor.h>
 #include <media/NdkMediaFormat.h>
+#include "ProfileSelectionScreen.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -43,6 +45,7 @@ struct Renderer {
     EGLContext context = EGL_NO_CONTEXT;
     GLuint program = 0;
     GLuint vertexBuffer = 0;
+    size_t vertexBufferCapacity = 8;
     GLint resolution = -1;
     GLint rectLocation = -1;
     GLint colorLocation = -1;
@@ -63,7 +66,7 @@ struct Renderer {
         const EGLint attrs[] = {
             EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
             EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
-            EGL_ALPHA_SIZE, 8, EGL_DEPTH_SIZE, 0,
+            EGL_ALPHA_SIZE, 8, EGL_DEPTH_SIZE, 16,
             EGL_NONE
         };
         eglChooseConfig(display, attrs, &config, 1, &count);
@@ -150,6 +153,7 @@ void main() { gl_FragColor = color; })";
         }
         glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
         glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 8, nullptr, GL_STREAM_DRAW);
+        vertexBufferCapacity = 8;
 
         glViewport(0, 0, surfaceWidth, surfaceHeight);
         glEnable(GL_BLEND);
@@ -174,6 +178,7 @@ void main() { gl_FragColor = color; })";
         context = EGL_NO_CONTEXT;
         program = 0;
         vertexBuffer = 0;
+        vertexBufferCapacity = 8;
     }
 
     void resize(ANativeWindow* window) {
@@ -258,10 +263,35 @@ void main() { gl_FragColor = color; })";
         (void)glyphs;
         const int glyphWidth = 5;
         const int glyphHeight = 5;
-        for (char raw : value) {
-            char ch = raw;
+        std::vector<float> textVertices;
+        textVertices.reserve(value.size() * 180);
+        for (size_t byte = 0; byte < value.size();) {
+            const unsigned char first = static_cast<unsigned char>(value[byte++]);
+            uint32_t codepoint = first;
+            if ((first & 0xE0u) == 0xC0u && byte < value.size()) {
+                codepoint = ((first & 0x1Fu) << 6) |
+                    (static_cast<unsigned char>(value[byte++]) & 0x3Fu);
+            } else if ((first & 0xF0u) == 0xE0u && byte + 1 < value.size()) {
+                const unsigned char second = static_cast<unsigned char>(value[byte++]);
+                const unsigned char third = static_cast<unsigned char>(value[byte++]);
+                codepoint = ((first & 0x0Fu) << 12) | ((second & 0x3Fu) << 6) |
+                    (third & 0x3Fu);
+            }
+            char ch = codepoint <= 0x7Fu ? static_cast<char>(codepoint) : '?';
+            switch (codepoint) {
+                case 0x00C7: case 0x00E7: ch = 'C'; break;
+                case 0x00C3: case 0x00E3: case 0x00C1: case 0x00E1:
+                case 0x00C0: case 0x00E0: case 0x00C2: case 0x00E2: ch = 'A'; break;
+                case 0x00C9: case 0x00E9: case 0x00CA: case 0x00EA: ch = 'E'; break;
+                case 0x00CD: case 0x00ED: ch = 'I'; break;
+                case 0x00D3: case 0x00F3: case 0x00D4: case 0x00F4: ch = 'O'; break;
+                case 0x00DA: case 0x00FA: ch = 'U'; break;
+                default: break;
+            }
             if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
-            int index = static_cast<int>(font.find(ch));
+            const size_t glyphIndex = font.find(ch);
+            int index = glyphIndex == std::string::npos
+                ? -1 : static_cast<int>(glyphIndex);
             if (ch == '.') index = -2;
             if (ch == '/') index = -3;
             if (ch == '-') index = -4;
@@ -274,7 +304,7 @@ void main() { gl_FragColor = color; })";
                         // 25 bits por caractere). A tabela antiga tinha
                         // entradas erradas/desalinhadas que deixavam várias
                         // letras com cara de símbolo estranho.
-                        const std::string patterns[] = {
+                        static const std::string patterns[] = {
                             "0111010001111111000110001","1111010001111101000111110","0111110000100001000001111","1111010001100011000111110","1111110000111101000011111",
                             "1111110000111101000010000","0111110000100111000101111","1000110001111111000110001","0111000100001000010001110","0011100010000101001001100",
                             "1000110010111001001010001","1000010000100001000011111","1000111011101011000110001","1000111001101011001110001","0111010001100011000101110",
@@ -297,11 +327,40 @@ void main() { gl_FragColor = color; })";
                     } else if (index == -5) {
                         on = (row == 1 || row == 3) && col == 2;
                     }
-                    if (on) rect(x + col * scale, y + row * scale, scale * .82f, scale * .82f, c);
+                    if (on) {
+                        const float left = (x + col * scale) / static_cast<float>(width);
+                        const float top = (y + row * scale) / static_cast<float>(height);
+                        const float right = (x + (col + .82f) * scale) / static_cast<float>(width);
+                        const float bottom = (y + (row + .82f) * scale) / static_cast<float>(height);
+                        textVertices.insert(textVertices.end(), {
+                            left, top, right, top, left, bottom,
+                            left, bottom, right, top, right, bottom
+                        });
+                    }
                 }
             }
             x += (glyphWidth + 1) * scale;
         }
+        if (textVertices.empty()) return;
+
+        glUseProgram(program);
+        glUniform2f(resolution, static_cast<float>(width), static_cast<float>(height));
+        glUniform4f(rectLocation, 0.f, 0.f, static_cast<float>(width),
+                    static_cast<float>(height));
+        glUniform4f(colorLocation, c.r, c.g, c.b, c.a);
+        glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
+        if (textVertices.size() > vertexBufferCapacity) {
+            vertexBufferCapacity = std::max(textVertices.size(), vertexBufferCapacity * 2);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(vertexBufferCapacity * sizeof(float)),
+                         nullptr, GL_STREAM_DRAW);
+        }
+        glBufferSubData(GL_ARRAY_BUFFER, 0,
+                        static_cast<GLsizeiptr>(textVertices.size() * sizeof(float)),
+                        textVertices.data());
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glEnableVertexAttribArray(0);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(textVertices.size() / 2));
     }
 
     void begin() {
@@ -594,6 +653,7 @@ struct SplashVideo {
 struct AppState {
     Renderer renderer;
     SplashVideo splashVideo;
+    xenon::ProfileSelectionScreen profileSelection;
     Screen screen = Screen::ProfileSelect;
     bool initialized = false;
     bool rendererInitialized = false;
@@ -601,14 +661,30 @@ struct AppState {
     bool playingSplashVideo = false;
     ANativeWindow* window = nullptr;
     AAssetManager* assetManager = nullptr;
+    std::string profileStoragePath;
     std::chrono::steady_clock::time_point splashStarted;
 
-    void initializeWindow(ANativeWindow* newWindow, AAssetManager* assets) {
+    void initializeRenderer() {
+        rendererInitialized = renderer.initialize(window);
+        if (!rendererInitialized) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to initialize the app renderer");
+            return;
+        }
+        if (!profileSelection.initialize(assetManager, profileStoragePath)) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Profile selection initialization failed; check model assets and GLES support");
+        }
+    }
+
+    void initializeWindow(ANativeWindow* newWindow, AAssetManager* assets,
+                          const char* storagePath) {
         window = newWindow;
         assetManager = assets;
+        profileStoragePath = storagePath ? storagePath : "";
         initialized = true;
         splashStarted = std::chrono::steady_clock::now();
 
+        profileSelection.shutdown();
         renderer.shutdown();
         rendererInitialized = false;
         if (showingSplash && splashVideo.start(assetManager, window)) {
@@ -617,10 +693,7 @@ struct AppState {
         }
 
         playingSplashVideo = false;
-        rendererInitialized = renderer.initialize(window);
-        if (!rendererInitialized) {
-            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to initialize the splash screen renderer");
-        }
+        initializeRenderer();
     }
 
     bool hit(float px, float py, const Rect& r) const {
@@ -650,6 +723,9 @@ struct AppState {
 
         renderer.text("XENON", margin, 28, 5, kText);
         renderer.text("NUCLEO EXPERIMENTAL", margin, 64, 3, kGreen);
+        renderer.text("PERFIL ATIVO", w - margin - 230.f, 28.f, 2.1f, kMuted);
+        renderer.text(profileSelection.activeProfileName(), w - margin - 230.f, 55.f,
+                       2.5f, kGreen);
 
         float heroY = 96;
         float heroH = std::min(h * .34f, 260.f);
@@ -755,101 +831,31 @@ struct AppState {
         renderer.roundedRect(cx - barW * .5f, h * .78f, barW * progress, 6.f, kGreen);
     }
 
-    // Avatar simples e genérico (boneco em blocos), sem relação com nenhum
-    // personagem real: só pra dar um corpo visual a cada perfil no seletor.
-    void drawAvatarFigure(float cx, float topY, const Color& accent) {
-        float headSize = 40.f;
-        float torsoW = 92.f;
-        float torsoH = 78.f;
-        float legW = 32.f;
-        float legH = 48.f;
-        float legGap = 10.f;
-
-        renderer.roundedRect(cx - headSize * .5f, topY, headSize, headSize, kPanel2);
-        renderer.roundedRect(cx - torsoW * .5f, topY + headSize + 6.f, torsoW, torsoH, kPanel2);
-        renderer.rect(cx - torsoW * .5f + 10.f, topY + headSize + 20.f, torsoW - 20.f, 14.f, accent);
-        renderer.roundedRect(cx - legGap * .5f - legW, topY + headSize + 6.f + torsoH, legW, legH, kMuted);
-        renderer.roundedRect(cx + legGap * .5f, topY + headSize + 6.f + torsoH, legW, legH, kMuted);
-    }
-
-    struct ProfileSlot { const char* name; const char* sub; bool create; Color accent; };
-
-    static const ProfileSlot* profileSlots() {
-        static const ProfileSlot slots[4] = {
-            {"JOGADOR UM", "ONLINE", false, kGreen},
-            {"JOGADOR DOIS", "ONLINE", false, kBlue},
-            {"CRIAR PERFIL", "NOVO PERFIL", true, kPanel2},
-            {"CONVIDADO", "OFFLINE", false, kMuted},
-        };
-        return slots;
-    }
-
-    // Caixa de toque (e posição central) de cada um dos 4 cartões, usada
-    // tanto pro desenho quanto pra detectar o toque.
-    void profileCardLayout(Rect out[4], float cx[4]) const {
-        float w = static_cast<float>(renderer.width);
-        float cardW = std::min(w * .2f, 230.f);
-        float gap = (w - cardW * 4.f) / 5.f;
-        float top = static_cast<float>(renderer.height) * .30f;
-        for (int i = 0; i < 4; ++i) {
-            cx[i] = gap + cardW * .5f + i * (cardW + gap);
-            out[i] = Rect{gap + i * (cardW + gap), top - 20.f, cardW, 260.f};
-        }
-    }
-
     void drawProfileSelect() {
-        float w = static_cast<float>(renderer.width);
-        float h = static_cast<float>(renderer.height);
-        float margin = std::clamp(w * .06f, 18.f, 42.f);
-
-        renderer.text("ENTRAR OU SAIR", w - margin - 236.f, 30.f, 3.3f, kText);
-        renderer.text("ESCOLHA O SEU PERFIL", w - margin - 236.f, 64.f, 2.5f, kMuted);
-
-        const ProfileSlot* slots = profileSlots();
-        Rect cards[4];
-        float centers[4];
-        profileCardLayout(cards, centers);
-
-        for (int i = 0; i < 4; ++i) {
-            const ProfileSlot& slot = slots[i];
-            float cx = centers[i];
-            float top = cards[i].y + 20.f;
-
-            if (slot.create) {
-                renderer.roundedRect(cx - 46.f, top, 92.f, 92.f, kPanel);
-                renderer.rect(cx - 24.f, top + 42.f, 48.f, 8.f, kMuted);
-                renderer.rect(cx - 4.f, top + 22.f, 8.f, 48.f, kMuted);
-            } else {
-                drawAvatarFigure(cx, top, slot.accent);
-                renderer.roundedRect(cx + 28.f, top, 16.f, 16.f, slot.accent);
-            }
-
-            float nameWidth = static_cast<float>(std::strlen(slot.name)) * 6.f * 2.6f;
-            renderer.text(slot.name, cx - nameWidth * .5f, top + 200.f, 2.6f, kText);
-            float subWidth = static_cast<float>(std::strlen(slot.sub)) * 6.f * 2.1f;
-            renderer.text(slot.sub, cx - subWidth * .5f, top + 230.f, 2.1f, kMuted);
-        }
-
-        float barHeight = std::clamp(h * .09f, 58.f, 82.f);
-        renderer.rect(0, h - barHeight, w, barHeight, kPanel);
-        renderer.text("A SELECIONAR", margin, h - barHeight + 26.f, 2.6f, kText);
-        const char* backLabel = "B VOLTAR";
-        float backWidth = static_cast<float>(std::strlen(backLabel)) * 6.f * 2.6f;
-        renderer.text(backLabel, w - margin - backWidth, h - barHeight + 26.f, 2.6f, kMuted);
+        static const auto drawRect = [](void* context, float x, float y, float width,
+                                        float height, float r, float g, float b, float a) {
+            auto* target = static_cast<Renderer*>(context);
+            target->rect(x, y, width, height, Color{r, g, b, a});
+        };
+        static const auto drawText = [](void* context, const char* text, float x, float y,
+                                        float scale, float r, float g, float b, float a) {
+            auto* target = static_cast<Renderer*>(context);
+            target->text(text, x, y, scale, Color{r, g, b, a});
+        };
+        const xenon::ProfileDrawApi api{&renderer, drawRect, drawText};
+        const float elapsed = std::chrono::duration<float>(
+            std::chrono::steady_clock::now() - splashStarted).count();
+        profileSelection.draw(static_cast<float>(renderer.width),
+                              static_cast<float>(renderer.height), elapsed, api);
     }
 
-    void handleProfileSelectTouch(float x, float y) {
-        Rect cards[4];
-        float centers[4];
-        profileCardLayout(cards, centers);
-        for (int i = 0; i < 4; ++i) {
-            const Rect& r = cards[i];
-            if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-                // Ainda não há criação/gestão real de perfil: qualquer cartão
-                // (inclusive "Criar Perfil") só abre o dashboard por enquanto.
-                screen = Screen::Home;
-                return;
-            }
+    void applyProfileAction(xenon::ProfileInputAction action) {
+        if (action == xenon::ProfileInputAction::Confirm) {
+            profileSelection.confirmSelection();
+            screen = Screen::Home;
+        } else if (action == xenon::ProfileInputAction::Back) {
+            profileSelection.cancelSelection();
+            screen = Screen::Home;
         }
     }
 
@@ -858,10 +864,7 @@ struct AppState {
             if (!splashVideo.renderFrame()) {
                 playingSplashVideo = false;
                 showingSplash = false;
-                rendererInitialized = renderer.initialize(window);
-                if (!rendererInitialized) {
-                    __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to initialize the app renderer");
-                }
+                initializeRenderer();
             }
             return;
         }
@@ -886,16 +889,31 @@ struct AppState {
 
     void handleTouch(float x, float y) {
         if (screen == Screen::ProfileSelect) {
-            handleProfileSelectTouch(x, y);
+            applyProfileAction(profileSelection.handleTouch(
+                x, y, static_cast<float>(renderer.width), static_cast<float>(renderer.height)));
             return;
         }
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
+        if (screen == Screen::Home && y < 90.f && x > w - 300.f) {
+            profileSelection.setSelectedProfile(profileSelection.activeProfile());
+            screen = Screen::ProfileSelect;
+            return;
+        }
         float barHeight = std::clamp(h * .09f, 58.f, 82.f);
         if (y >= h - barHeight) {
             int index = std::clamp(static_cast<int>(x / (w / 4.f)), 0, 3);
             screen = static_cast<Screen>(index);
             return;
+        }
+    }
+
+    void handleKey(int keyCode) {
+        if (screen == Screen::ProfileSelect) {
+            applyProfileAction(profileSelection.handleKey(keyCode));
+        } else if (screen == Screen::Home && keyCode == AKEYCODE_BUTTON_X) {
+            profileSelection.setSelectedProfile(profileSelection.activeProfile());
+            screen = Screen::ProfileSelect;
         }
     }
 };
@@ -905,13 +923,15 @@ void onAppCmd(android_app* app, int32_t cmd) {
     switch (cmd) {
         case APP_CMD_INIT_WINDOW:
             if (app->window && state) {
-                state->initializeWindow(app->window, app->activity->assetManager);
+                state->initializeWindow(app->window, app->activity->assetManager,
+                                        app->activity->internalDataPath);
             }
             break;
         case APP_CMD_TERM_WINDOW:
             if (state) {
                 state->splashVideo.stop();
                 state->playingSplashVideo = false;
+                state->profileSelection.shutdown();
                 state->renderer.shutdown();
                 state->rendererInitialized = false;
                 state->initialized = false;
@@ -930,7 +950,15 @@ void onAppCmd(android_app* app, int32_t cmd) {
 
 int32_t onInputEvent(android_app* app, AInputEvent* event) {
     auto* state = reinterpret_cast<AppState*>(app->userData);
-    if (AInputEvent_getType(event) != AINPUT_EVENT_TYPE_MOTION || !state) return 0;
+    if (!state) return 0;
+    if (AInputEvent_getType(event) == AINPUT_EVENT_TYPE_KEY) {
+        if (AKeyEvent_getAction(event) == AKEY_EVENT_ACTION_DOWN && !state->showingSplash) {
+            state->handleKey(AKeyEvent_getKeyCode(event));
+            return 1;
+        }
+        return 0;
+    }
+    if (AInputEvent_getType(event) != AINPUT_EVENT_TYPE_MOTION) return 0;
     if (AMotionEvent_getAction(event) == AMOTION_EVENT_ACTION_DOWN) {
         if (state->showingSplash) return 1;
         state->handleTouch(
@@ -960,5 +988,6 @@ void android_main(android_app* app) {
         if (app->destroyRequested) running = false;
         if (state.initialized) state.draw();
     }
+    state.profileSelection.shutdown();
     state.renderer.shutdown();
 }
