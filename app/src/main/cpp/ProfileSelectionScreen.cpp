@@ -37,12 +37,34 @@ struct Color {
     float a;
 };
 
-constexpr Color kText{0.055f, 0.078f, 0.075f, 1.f};
-constexpr Color kMuted{0.31f, 0.38f, 0.36f, 1.f};
-constexpr Color kGreen{0.12f, 0.61f, 0.32f, 1.f};
-constexpr Color kMint{0.49f, 0.82f, 0.60f, 1.f};
-constexpr Color kBlue{0.21f, 0.54f, 0.81f, 1.f};
-constexpr Color kCard{0.93f, 0.96f, 0.94f, 0.82f};
+constexpr Color kText{0.10f, 0.11f, 0.12f, 1.f};
+constexpr Color kWhite{0.98f, 0.98f, 0.98f, 1.f};
+constexpr Color kGreen{0.20f, 0.68f, 0.08f, 1.f};
+constexpr Color kGreenBright{0.42f, 0.95f, 0.22f, 1.f};
+constexpr Color kOnline{0.38f, 0.86f, 0.10f, 1.f};
+constexpr Color kOffline{0.42f, 0.43f, 0.45f, 1.f};
+constexpr Color kRed{0.80f, 0.10f, 0.12f, 1.f};
+constexpr Color kCardTop{0.62f, 0.63f, 0.66f, 0.92f};
+constexpr Color kCardBottom{0.90f, 0.91f, 0.92f, 0.94f};
+constexpr Color kSilhouette{0.86f, 0.87f, 0.89f, 1.f};
+
+struct CardLayout {
+    float startX;
+    float top;
+    float width;
+    float height;
+    float gap;
+};
+
+CardLayout cardLayout(float width, float height) {
+    CardLayout layout{};
+    layout.gap = 14.f;
+    layout.startX = width * .385f;
+    layout.width = (width * .59f - layout.gap * 3.f) / 4.f;
+    layout.top = height * .27f;
+    layout.height = height * .40f;
+    return layout;
+}
 
 GLuint compileShader(GLenum type, const char* source) {
     const GLuint shader = glCreateShader(type);
@@ -95,6 +117,104 @@ void drawRect(const ProfileDrawApi& api, float x, float y, float width, float he
               const Color& color) {
     api.rect(api.context, x, y, width, height,
              color.r, color.g, color.b, color.a);
+}
+
+// Filled rounded rectangle built from horizontal strips (the host only draws plain rects).
+void drawRoundedRect(const ProfileDrawApi& api, float x, float y, float w, float h,
+                     float radius, const Color& color) {
+    radius = std::min(radius, std::min(w, h) * .5f);
+    if (radius < 1.f) {
+        drawRect(api, x, y, w, h, color);
+        return;
+    }
+    drawRect(api, x, y + radius, w, h - radius * 2.f, color);
+    const int steps = std::max(3, static_cast<int>(radius));
+    const float stepH = radius / steps;
+    for (int i = 0; i < steps; ++i) {
+        const float dy = radius - (i + .5f) * stepH;
+        const float inset = radius - std::sqrt(std::max(0.f, radius * radius - dy * dy));
+        drawRect(api, x + inset, y + i * stepH, w - inset * 2.f, stepH + .35f, color);
+        drawRect(api, x + inset, y + h - (i + 1) * stepH - .35f, w - inset * 2.f,
+                 stepH + .35f, color);
+    }
+}
+
+// Rounded rect whose top part uses one color and bottom part another.
+void drawSplitRoundedRect(const ProfileDrawApi& api, float x, float y, float w, float h,
+                          float radius, float split, const Color& top, const Color& bottom) {
+    radius = std::min(radius, std::min(w, h) * .5f);
+    const int steps = std::max(3, static_cast<int>(radius));
+    const float stepH = radius / steps;
+    for (int i = 0; i < steps; ++i) {
+        const float dy = radius - (i + .5f) * stepH;
+        const float inset = radius - std::sqrt(std::max(0.f, radius * radius - dy * dy));
+        drawRect(api, x + inset, y + i * stepH, w - inset * 2.f, stepH + .35f, top);
+        drawRect(api, x + inset, y + h - (i + 1) * stepH - .35f, w - inset * 2.f,
+                 stepH + .35f, bottom);
+    }
+    drawRect(api, x, y + radius, w, split - radius, top);
+    drawRect(api, x, y + split, w, h - split - radius, bottom);
+}
+
+void drawRoundedOutline(const ProfileDrawApi& api, float x, float y, float w, float h,
+                        float radius, float thickness, const Color& color) {
+    const int steps = std::max(4, static_cast<int>(radius));
+    const float stepH = radius / steps;
+    drawRect(api, x + radius, y, w - radius * 2.f, thickness, color);
+    drawRect(api, x + radius, y + h - thickness, w - radius * 2.f, thickness, color);
+    drawRect(api, x, y + radius, thickness, h - radius * 2.f, color);
+    drawRect(api, x + w - thickness, y + radius, thickness, h - radius * 2.f, color);
+    for (int i = 0; i < steps; ++i) {
+        const float dy = radius - (i + .5f) * stepH;
+        const float inset = radius - std::sqrt(std::max(0.f, radius * radius - dy * dy));
+        const float nextDy = radius - (i + 1.5f) * stepH;
+        const float nextInset = i + 1 < steps
+            ? radius - std::sqrt(std::max(0.f, radius * radius - nextDy * nextDy)) : 0.f;
+        const float segW = std::max(thickness, inset - nextInset + thickness);
+        for (int side = 0; side < 2; ++side) {
+            const float rowY = side == 0 ? y + i * stepH : y + h - (i + 1) * stepH;
+            drawRect(api, x + inset, rowY, segW, stepH + .4f, color);
+            drawRect(api, x + w - inset - segW, rowY, segW, stepH + .4f, color);
+        }
+        if (i == 0) {
+            drawRect(api, x + inset, y, radius - inset, thickness, color);
+            drawRect(api, x + w - radius, y, radius - inset, thickness, color);
+            drawRect(api, x + inset, y + h - thickness, radius - inset, thickness, color);
+            drawRect(api, x + w - radius, y + h - thickness, radius - inset, thickness, color);
+        }
+    }
+}
+
+void drawCircle(const ProfileDrawApi& api, float cx, float cy, float radius,
+                const Color& color) {
+    const int steps = std::max(6, static_cast<int>(radius * 1.5f));
+    const float stepH = radius * 2.f / steps;
+    for (int i = 0; i < steps; ++i) {
+        const float dy = -radius + (i + .5f) * stepH;
+        const float half = std::sqrt(std::max(0.f, radius * radius - dy * dy));
+        drawRect(api, cx - half, cy - radius + i * stepH, half * 2.f, stepH + .3f, color);
+    }
+}
+
+// Glossy status orb: base disc plus a soft highlight.
+void drawOrb(const ProfileDrawApi& api, float cx, float cy, float radius, const Color& color) {
+    drawCircle(api, cx, cy, radius + 1.f, {0.f, 0.f, 0.f, .18f});
+    drawCircle(api, cx, cy, radius, color);
+    drawCircle(api, cx - radius * .25f, cy - radius * .3f, radius * .45f,
+               {1.f, 1.f, 1.f, .35f});
+}
+
+// Generic person silhouette used for "Criar perfil" and "Convidado".
+void drawSilhouette(const ProfileDrawApi& api, float cx, float top, float areaH,
+                    const Color& color) {
+    const float headR = areaH * .17f;
+    const float headCy = top + areaH * .30f;
+    drawCircle(api, cx, headCy, headR, color);
+    drawRect(api, cx - headR * .45f, headCy + headR * .8f, headR * .9f, headR * .6f, color);
+    const float shoulderTop = headCy + headR * 1.25f;
+    const float bodyW = headR * 4.f;
+    drawRoundedRect(api, cx - bodyW * .5f, shoulderTop, bodyW, top + areaH - shoulderTop + 20.f,
+                    headR * 1.5f, color);
 }
 
 uint32_t nextCodepoint(const char*& text) {
@@ -177,42 +297,43 @@ void main() {
     static const char* backgroundFragment = R"(precision mediump float;
 varying vec2 uv;
 uniform float time;
+float ribbon(float y, float center, float thickness, float softness) {
+    return smoothstep(thickness + softness, thickness, abs(y - center));
+}
 void main() {
     float y = 1.0 - uv.y;
-    float light = exp(-length((uv - vec2(0.18, 0.70)) * vec2(1.25, 0.9)) * 2.2);
-    vec3 base = mix(vec3(0.97, 0.98, 0.97), vec3(0.82, 0.87, 0.84),
-                    smoothstep(0.0, 1.0, y) * 0.62);
-    base += vec3(0.025, 0.045, 0.028) * light;
+    // Studio grey: darker ceiling, bright horizon, soft reflective floor.
+    vec3 top = vec3(0.26, 0.27, 0.29);
+    vec3 mid = vec3(0.80, 0.81, 0.83);
+    vec3 floorColor = vec3(0.72, 0.73, 0.76);
+    vec3 base = mix(top, mid, smoothstep(0.0, 0.62, y));
+    base = mix(base, floorColor, smoothstep(0.62, 1.0, y) * 0.6);
+    float spot = exp(-length((uv - vec2(0.25, 0.55)) * vec2(1.1, 1.4)) * 2.4);
+    base += vec3(0.10) * spot;
 
-    float farWave = 0.60 + 0.075 * sin(uv.x * 2.35 - time * 0.075)
-                         + 0.018 * sin(uv.x * 5.2 + time * 0.06);
-    float middleWave = 0.735 + 0.052 * sin(uv.x * 2.8 + time * 0.09 + 0.8)
-                            + 0.014 * sin(uv.x * 6.1 - time * 0.055);
-    float nearWave = 0.86 + 0.032 * sin(uv.x * 3.35 - time * 0.065 + 1.6);
-    float farFill = smoothstep(farWave - 0.018, farWave + 0.038, y);
-    float middleFill = smoothstep(middleWave - 0.012, middleWave + 0.030, y);
-    float nearFill = smoothstep(nearWave - 0.008, nearWave + 0.024, y);
-    float farCrest = exp(-abs(y - farWave) * 82.0);
-    float middleCrest = exp(-abs(y - middleWave) * 112.0);
-    float nearCrest = exp(-abs(y - nearWave) * 150.0);
-    float shadow = exp(-abs(y - middleWave - 0.025) * 52.0);
-    float glow = exp(-abs(y - middleWave + 0.012) * 88.0);
-    base = mix(base, vec3(0.60, 0.77, 0.64), farFill * 0.46);
-    base = mix(base, vec3(0.28, 0.57, 0.38), middleFill * 0.58);
-    base = mix(base, vec3(0.13, 0.40, 0.25), nearFill * 0.72);
-    base += vec3(0.035, 0.09, 0.045) * farCrest * 0.32;
-    base += vec3(0.045, 0.12, 0.058) * middleCrest * 0.38;
-    base += vec3(0.06, 0.15, 0.075) * nearCrest * 0.31;
-    base *= 1.0 - shadow * 0.11;
-    base += vec3(0.04, 0.12, 0.055) * glow * 0.10;
+    // Xbox-style green swooshes sweeping from the left edge to the lower right.
+    float x = uv.x;
+    float drift = sin(time * 0.12) * 0.012;
+    float c1 = 0.40 + 0.30 * x - 0.20 * x * x + drift + 0.012 * sin(x * 5.0 + time * 0.2);
+    float c2 = 0.52 + 0.22 * x - 0.08 * x * x - drift;
+    float c3 = 0.63 + 0.12 * x + 0.04 * sin(x * 3.0 - time * 0.15);
+    float w1 = 0.07 * (1.0 - x * 0.75);
+    float w2 = 0.035 * (1.0 - x * 0.6);
+    float w3 = 0.02 + 0.015 * x;
+    vec3 green = vec3(0.30, 0.78, 0.10);
+    vec3 lime = vec3(0.62, 0.95, 0.38);
+    float r1 = ribbon(y, c1, w1, 0.015);
+    float r2 = ribbon(y, c2, w2, 0.012);
+    float r3 = ribbon(y, c3, w3, 0.010);
+    float fade1 = 1.0 - smoothstep(0.55, 0.95, x) * 0.9;
+    base = mix(base, mix(green, lime, smoothstep(c1 - w1, c1 + w1, y)), r1 * fade1);
+    base = mix(base, mix(vec3(0.90, 0.95, 0.88), lime, 0.4), r2 * 0.85 * fade1);
+    base = mix(base, mix(green, lime, 0.5), r3 * (0.35 + 0.65 * smoothstep(0.3, 1.0, x)));
+    float glow = exp(-abs(y - c1) * 18.0) * fade1;
+    base += vec3(0.05, 0.12, 0.02) * glow * 0.35;
 
-    float reflection = exp(-abs(y - middleWave - 0.075) * 25.0);
-    float reflectionLine = exp(-abs(y - farWave - 0.045) * 42.0);
-    float reflectionBreakup = 0.5 + 0.5 * sin(uv.x * 34.0 + time * 0.18);
-    base += vec3(0.11, 0.20, 0.14) * reflection * 0.055;
-    base += vec3(0.16, 0.23, 0.17) * reflectionLine * reflectionBreakup * 0.035;
-    float vignette = smoothstep(0.0, 0.9, length((uv - 0.5) * vec2(0.95, 1.05)));
-    base *= 1.0 - vignette * 0.055;
+    float vignette = smoothstep(0.35, 1.0, length((uv - vec2(0.5, 0.55)) * vec2(1.0, 1.2)));
+    base *= 1.0 - vignette * 0.18;
     gl_FragColor = vec4(base, 1.0);
 })";
     static const char* modelVertex = R"(precision highp float;
@@ -673,6 +794,24 @@ float ProfileSelectionScreen::textWidth(const char* text, float scale) const {
     return width;
 }
 
+void ProfileSelectionScreen::drawPortrait(const Model& model, float x, float y, float w,
+                                          float h, float elapsedSeconds) {
+    // Clip the model to the portrait area so only head and shoulders are visible.
+    GLint viewport[4] = {0, 0, 1280, 720};
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    const float sx = viewport[2] / 1280.f;
+    const float sy = viewport[3] / 720.f;
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(viewport[0] + static_cast<GLint>(x * sx),
+              viewport[1] + static_cast<GLint>((720.f - (y + h)) * sy),
+              static_cast<GLsizei>(w * sx), static_cast<GLsizei>(h * sy));
+    glClear(GL_DEPTH_BUFFER_BIT);
+    const float scale = h * 1.45f;
+    const float yaw = std::sin(elapsedSeconds * .18f) * .02f;
+    drawModel(model, x + w * .5f, y + scale * .93f, scale, yaw, 1.f, 1.f);
+    glDisable(GL_SCISSOR_TEST);
+}
+
 void ProfileSelectionScreen::draw(float width, float height, float elapsedSeconds,
                                   const ProfileDrawApi& api) {
     drawBackground(elapsedSeconds);
@@ -689,119 +828,140 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
     glDepthMask(GL_TRUE);
-    glClear(GL_DEPTH_BUFFER_BIT);
-    const Model& heroModel = selectedProfile_ == 1 || selectedProfile_ == 3 ? female_ : male_;
-    const float modelScale = std::min(height * .30f, 216.f);
-    const float floorLine = height - 68.f;
-    const float modelCenterY = floorLine - modelScale * .995f;
-    const float modelCenterX = width * .235f;
-    const float idleYaw = std::sin(elapsedSeconds * .22f) * .012f;
-    drawModel(heroModel, modelCenterX, modelCenterY, modelScale, idleYaw, 1.f, 1.f);
 
-    const float startX = width * .485f;
-    const float gap = 11.f;
-    const float cardWidth = (width * .49f - gap * 3.f) / 4.f;
-    const float cardTop = height * .365f;
-    const float cardHeight = height * .405f;
-    const float titleX = startX;
-    drawText("Escolha um perfil", titleX, height * .105f, 6.f,
-             kText.r, kText.g, kText.b, kText.a);
-    drawText("Faça login para continuar", titleX, height * .178f, 3.45f,
-             kMuted.r, kMuted.g, kMuted.b, kMuted.a);
+    // Large hero avatar on the left, standing on the floor.
+    glDisable(GL_DEPTH_TEST);
+    const float floorLine = height - 42.f;
+    const float heroCenterX = width * .235f;
+    drawRect(api, heroCenterX - 150.f, floorLine - 8.f, 300.f, 14.f, {0.f, 0.f, 0.f, .10f});
+    drawRect(api, heroCenterX - 100.f, floorLine - 5.f, 200.f, 8.f, {0.f, 0.f, 0.f, .12f});
+    glEnable(GL_DEPTH_TEST);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    const Model& heroModel = selectedProfile_ == 1 ? female_ : male_;
+    const float modelScale = std::min(height * .45f, 330.f);
+    const float modelCenterY = floorLine - modelScale * .995f;
+    const float idleYaw = std::sin(elapsedSeconds * .22f) * .012f;
+    drawModel(heroModel, heroCenterX, modelCenterY, modelScale, idleYaw, 1.f, 1.f);
+    glDisable(GL_DEPTH_TEST);
+
+    // Right-aligned title block.
+    const float rightEdge = width - 48.f;
+    const char* title = "Escolha um perfil";
+    const char* subtitle = "Faça login para continuar";
+    drawText(title, rightEdge - textWidth(title, 6.6f), height * .075f, 6.6f,
+             kWhite.r, kWhite.g, kWhite.b, kWhite.a);
+    drawText(subtitle, rightEdge - textWidth(subtitle, 3.5f), height * .165f, 3.5f,
+             kWhite.r, kWhite.g, kWhite.b, .92f);
 
     static const char* names[] = {"Jogador um", "Jogador dois", "Criar perfil", "Convidado"};
     static const char* statuses[] = {"Online", "Online", "Novo perfil", "Offline"};
-    static const Color accents[] = {kGreen, kBlue, kMint, kMuted};
+
+    const CardLayout layout = cardLayout(width, height);
+    const float radius = 12.f;
+    const float pulse = .5f + .5f * std::sin(elapsedSeconds * 2.7f);
 
     for (int i = 0; i < 4; ++i) {
-        const float x = startX + i * (cardWidth + gap);
-        const float centerX = x + cardWidth * .5f;
         const float blend = std::clamp(selectionBlend_[i], 0.f, 1.f);
-        const float pulse = .5f + .5f * std::sin(elapsedSeconds * 2.7f);
-        drawRect(api, x, cardTop, cardWidth, cardHeight,
-                 {kCard.r, kCard.g, kCard.b, .87f + blend * .08f});
+        const float grow = blend * 10.f;
+        const float x = layout.startX + i * (layout.width + layout.gap) - grow * .5f;
+        const float y = layout.top - grow * 1.4f;
+        const float w = layout.width + grow;
+        const float h = layout.height + grow * 1.4f;
+        const float portraitH = h * .65f;
+        const float centerX = x + w * .5f;
+
+        // Drop shadow.
+        drawRoundedRect(api, x + 2.f, y + 6.f, w, h, radius, {0.f, 0.f, 0.f, .14f});
+
+        // Outer neon glow on the selected card.
         if (blend > .01f) {
-            const float glowAlpha = .09f + .07f * pulse;
-            drawRect(api, x - 10.f, cardTop - 10.f, cardWidth + 20.f, 3.f,
-                     {kGreen.r, kGreen.g, kGreen.b, glowAlpha});
-            drawRect(api, x - 10.f, cardTop + cardHeight + 7.f, cardWidth + 20.f, 3.f,
-                     {kGreen.r, kGreen.g, kGreen.b, glowAlpha});
-            drawRect(api, x - 10.f, cardTop - 7.f, 3.f, cardHeight + 14.f,
-                     {kGreen.r, kGreen.g, kGreen.b, glowAlpha});
-            drawRect(api, x + cardWidth + 7.f, cardTop - 7.f, 3.f, cardHeight + 14.f,
-                     {kGreen.r, kGreen.g, kGreen.b, glowAlpha});
-            const float edgeAlpha = .80f + .18f * pulse;
-            drawRect(api, x - 2.f, cardTop - 2.f, cardWidth + 4.f, 2.f,
-                     {kGreen.r, kGreen.g, kGreen.b, edgeAlpha});
-            drawRect(api, x - 2.f, cardTop + cardHeight, cardWidth + 4.f, 2.f,
-                     {kGreen.r, kGreen.g, kGreen.b, edgeAlpha});
-            drawRect(api, x - 2.f, cardTop, 2.f, cardHeight,
-                     {kGreen.r, kGreen.g, kGreen.b, edgeAlpha});
-            drawRect(api, x + cardWidth, cardTop, 2.f, cardHeight,
-                     {kGreen.r, kGreen.g, kGreen.b, edgeAlpha});
-            drawRect(api, x + 7.f, cardTop + 7.f, cardWidth - 14.f, 2.f,
-                     {kMint.r, kMint.g, kMint.b, .4f + blend * .38f});
+            const float glow = (.18f + .10f * pulse) * blend;
+            for (int ring = 4; ring >= 1; --ring) {
+                const float spread = ring * 4.f;
+                drawRoundedRect(api, x - spread, y - spread, w + spread * 2.f, h + spread * 2.f,
+                                radius + spread,
+                                {kGreenBright.r, kGreenBright.g, kGreenBright.b,
+                                 glow / static_cast<float>(ring)});
+            }
         }
 
-        if (i == 2) {
-            const float plusY = cardTop + 69.f;
-            drawRect(api, centerX - 29.f, plusY + 13.f, 58.f, 8.f,
-                     {kGreen.r, kGreen.g, kGreen.b, .82f});
-            drawRect(api, centerX - 4.f, plusY - 12.f, 8.f, 58.f,
-                     {kGreen.r, kGreen.g, kGreen.b, .82f});
+        const Color bottom{
+            kCardBottom.r + (kGreen.r - kCardBottom.r) * blend,
+            kCardBottom.g + (kGreen.g - kCardBottom.g) * blend,
+            kCardBottom.b + (kGreen.b - kCardBottom.b) * blend,
+            kCardBottom.a};
+        drawSplitRoundedRect(api, x, y, w, h, radius, portraitH, kCardTop, bottom);
+        // Soft highlight across the portrait area.
+        drawRect(api, x + radius, y + 2.f, w - radius * 2.f, portraitH * .35f,
+                 {1.f, 1.f, 1.f, .10f});
+
+        if (i == 2 || i == 3) {
+            drawSilhouette(api, centerX, y + 8.f, portraitH - 8.f, kSilhouette);
         } else {
-            const Model& model = i == 1 || i == 3 ? female_ : male_;
-            const float size = 76.f + blend * 5.f;
-            const float yaw = std::sin(elapsedSeconds * .18f) * .009f;
-            drawModel(model, centerX, cardTop + 96.f, size, yaw, 1.f, 1.f);
+            glEnable(GL_DEPTH_TEST);
+            drawPortrait(i == 1 ? female_ : male_, x + 3.f, y + 3.f, w - 6.f,
+                         portraitH - 3.f, elapsedSeconds);
+            glDisable(GL_DEPTH_TEST);
         }
 
-        const float labelScale = i == 2 ? 2.65f : 2.9f;
-        const Color labelColor = blend > .35f ? kGreen : kText;
-        drawText(names[i], centerX - textWidth(names[i], labelScale) * .5f,
-                 cardTop + cardHeight - 80.f, labelScale,
-                 labelColor.r, labelColor.g, labelColor.b, labelColor.a);
-        const Color statusColor = i == 2 ? kMuted : accents[i];
-        const float statusScale = 2.25f;
-        drawRect(api, centerX - 32.f, cardTop + cardHeight - 48.f, 7.f, 7.f,
-                 {statusColor.r, statusColor.g, statusColor.b, .9f});
-        drawText(statuses[i], centerX + 8.f - textWidth(statuses[i], statusScale) * .5f,
-                 cardTop + cardHeight - 49.f, statusScale,
-                 statusColor.r, statusColor.g, statusColor.b, statusColor.a);
+        if (blend > .01f) {
+            drawRoundedOutline(api, x - 1.f, y - 1.f, w + 2.f, h + 2.f, radius + 1.f, 3.5f,
+                               {kGreenBright.r, kGreenBright.g, kGreenBright.b,
+                                (.85f + .15f * pulse) * blend});
+        }
+
+        const Color labelColor{
+            kText.r + (kWhite.r - kText.r) * blend,
+            kText.g + (kWhite.g - kText.g) * blend,
+            kText.b + (kWhite.b - kText.b) * blend, 1.f};
+        const float textX = x + 18.f;
+        drawText(names[i], textX, y + portraitH + 14.f, 3.3f,
+                 labelColor.r, labelColor.g, labelColor.b, 1.f);
+
+        const float orbY = y + portraitH + (h - portraitH) * .70f;
+        const float orbR = 9.f;
+        if (i == 2) {
+            drawCircle(api, textX + orbR, orbY, orbR, {0.28f, 0.29f, 0.31f, 1.f});
+            drawRect(api, textX + orbR - 5.f, orbY - 1.25f, 10.f, 2.5f, kWhite);
+            drawRect(api, textX + orbR - 1.25f, orbY - 5.f, 2.5f, 10.f, kWhite);
+        } else {
+            drawOrb(api, textX + orbR, orbY, orbR, i == 3 ? kOffline : kOnline);
+        }
+        drawText(statuses[i], textX + orbR * 2.f + 10.f, orbY - 12.f, 2.6f,
+                 labelColor.r, labelColor.g, labelColor.b, .95f);
     }
 
-    glDisable(GL_DEPTH_TEST);
-    drawRect(api, 0.f, height - 60.f, width, 60.f, {0.91f, 0.94f, 0.92f, .90f});
-    drawRect(api, 0.f, height - 60.f, width, 1.f, {0.20f, 0.38f, 0.28f, .13f});
-    drawText("A  Selecionar", 40.f, height - 38.f, 3.2f,
-             kText.r, kText.g, kText.b, kText.a);
-    const char* backText = "B  Voltar";
-    drawText(backText, width - 40.f - textWidth(backText, 3.2f),
-             height - 38.f, 3.2f, kMuted.r, kMuted.g, kMuted.b, kMuted.a);
+    // Controller hints bottom-left: green A and red B buttons.
+    const float hintY = height - 34.f;
+    drawOrb(api, 52.f, hintY, 14.f, kGreen);
+    drawText("A", 52.f - textWidth("A", 2.6f) * .5f, hintY - 13.f, 2.6f,
+             kWhite.r, kWhite.g, kWhite.b, 1.f);
+    drawText("Selecionar", 74.f, hintY - 14.f, 3.f, kWhite.r, kWhite.g, kWhite.b, 1.f);
+    const float bX = 74.f + textWidth("Selecionar", 3.f) + 34.f;
+    drawOrb(api, bX, hintY, 14.f, kRed);
+    drawText("B", bX - textWidth("B", 2.6f) * .5f, hintY - 13.f, 2.6f,
+             kWhite.r, kWhite.g, kWhite.b, 1.f);
+    drawText("Voltar", bX + 22.f, hintY - 14.f, 3.f, kWhite.r, kWhite.g, kWhite.b, 1.f);
 }
 
 ProfileInputAction ProfileSelectionScreen::handleTouch(float x, float y, float width,
                                                        float height) {
-    const float startX = width * .485f;
-    const float gap = 11.f;
-    const float cardWidth = (width * .49f - gap * 3.f) / 4.f;
-    const float cardTop = height * .365f;
-    const float cardHeight = height * .405f;
+    const CardLayout layout = cardLayout(width, height);
     for (int i = 0; i < 4; ++i) {
-        const float left = startX + i * (cardWidth + gap);
-        if (x >= left && x <= left + cardWidth &&
-            y >= cardTop && y <= cardTop + cardHeight) {
+        const float left = layout.startX + i * (layout.width + layout.gap);
+        if (x >= left && x <= left + layout.width &&
+            y >= layout.top - 14.f && y <= layout.top + layout.height) {
             if (selectedProfile_ == i) return ProfileInputAction::Confirm;
             selectedProfile_ = i;
             return ProfileInputAction::None;
         }
     }
 
-    if (y >= height - 60.f) {
-        return x < width * .5f ? ProfileInputAction::Confirm : ProfileInputAction::Back;
+    // Bottom-left controller hints: "A Selecionar" then "B Voltar".
+    if (y >= height - 64.f && x < 360.f) {
+        return x < 200.f ? ProfileInputAction::Confirm : ProfileInputAction::Back;
     }
     return ProfileInputAction::None;
 }

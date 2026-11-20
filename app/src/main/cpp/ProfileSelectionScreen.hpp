@@ -69,6 +69,8 @@ private:
     float textWidth(const char* text, float scale) const;
     void drawModel(const Model& model, float centerX, float centerY, float scale,
                    float angle, float alpha, float verticalScale);
+    void drawPortrait(const Model& model, float x, float y, float w, float h,
+                      float elapsedSeconds);
     void loadSelection();
     void saveSelection() const;
 
