@@ -3,6 +3,7 @@
 #include <GLES2/gl2.h>
 #include <android/asset_manager.h>
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,7 @@ public:
     void draw(float width, float height, float elapsedSeconds, const ProfileDrawApi& api);
     ProfileInputAction handleTouch(float x, float y, float width, float height);
     ProfileInputAction handleKey(int keyCode);
+    ProfileInputAction handleJoystick(float leftX, float rightX, float hatX);
 
     void setSelectedProfile(int index);
     void confirmSelection();
@@ -104,6 +106,8 @@ private:
     float selectionBlend_[4] = {1.f, 0.f, 0.f, 0.f};
     int selectedProfile_ = 0;
     int activeProfile_ = 0;
+    int joystickDirection_ = 0;
+    std::chrono::steady_clock::time_point joystickRepeatAt_;
     float previousFrameTime_ = 0.f;
     bool hasPreviousFrame_ = false;
 };

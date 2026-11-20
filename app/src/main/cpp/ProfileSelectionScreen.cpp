@@ -179,25 +179,40 @@ varying vec2 uv;
 uniform float time;
 void main() {
     float y = 1.0 - uv.y;
-    vec3 base = mix(vec3(0.96, 0.97, 0.96), vec3(0.84, 0.88, 0.86),
-                    smoothstep(0.0, 1.0, y) * 0.64);
-    float wave = 0.825 + 0.045 * sin(uv.x * 3.15 - time * 0.10)
-                       + 0.012 * sin(uv.x * 6.3 + time * 0.07);
-    float upperWave = 0.775 + 0.022 * sin(uv.x * 2.85 + time * 0.08);
-    float lowerFill = smoothstep(wave - 0.012, wave + 0.024, y);
-    float waveBand = exp(-abs(y - wave) * 145.0);
-    float upperBand = exp(-abs(y - upperWave) * 105.0);
-    float softShadow = exp(-abs(y - wave - 0.018) * 58.0);
-    float softGlow = exp(-abs(y - wave + 0.008) * 72.0);
-    base = mix(base, vec3(0.39, 0.64, 0.48), lowerFill * 0.60);
-    base = mix(base, vec3(0.18, 0.48, 0.30), lowerFill *
-               smoothstep(wave + 0.035, 0.99, y) * 0.32);
-    base += vec3(0.045, 0.13, 0.067) * waveBand * 0.30;
-    base += vec3(0.16, 0.30, 0.20) * upperBand * 0.13;
-    base *= 1.0 - softShadow * 0.07;
-    base += vec3(0.04, 0.13, 0.065) * softGlow * 0.10;
-    float reflection = exp(-abs(y - wave - 0.075) * 25.0);
-    base += vec3(0.11, 0.20, 0.14) * reflection * 0.028;
+    float light = exp(-length((uv - vec2(0.18, 0.70)) * vec2(1.25, 0.9)) * 2.2);
+    vec3 base = mix(vec3(0.97, 0.98, 0.97), vec3(0.82, 0.87, 0.84),
+                    smoothstep(0.0, 1.0, y) * 0.62);
+    base += vec3(0.025, 0.045, 0.028) * light;
+
+    float farWave = 0.60 + 0.075 * sin(uv.x * 2.35 - time * 0.075)
+                         + 0.018 * sin(uv.x * 5.2 + time * 0.06);
+    float middleWave = 0.735 + 0.052 * sin(uv.x * 2.8 + time * 0.09 + 0.8)
+                            + 0.014 * sin(uv.x * 6.1 - time * 0.055);
+    float nearWave = 0.86 + 0.032 * sin(uv.x * 3.35 - time * 0.065 + 1.6);
+    float farFill = smoothstep(farWave - 0.018, farWave + 0.038, y);
+    float middleFill = smoothstep(middleWave - 0.012, middleWave + 0.030, y);
+    float nearFill = smoothstep(nearWave - 0.008, nearWave + 0.024, y);
+    float farCrest = exp(-abs(y - farWave) * 82.0);
+    float middleCrest = exp(-abs(y - middleWave) * 112.0);
+    float nearCrest = exp(-abs(y - nearWave) * 150.0);
+    float shadow = exp(-abs(y - middleWave - 0.025) * 52.0);
+    float glow = exp(-abs(y - middleWave + 0.012) * 88.0);
+    base = mix(base, vec3(0.60, 0.77, 0.64), farFill * 0.46);
+    base = mix(base, vec3(0.28, 0.57, 0.38), middleFill * 0.58);
+    base = mix(base, vec3(0.13, 0.40, 0.25), nearFill * 0.72);
+    base += vec3(0.035, 0.09, 0.045) * farCrest * 0.32;
+    base += vec3(0.045, 0.12, 0.058) * middleCrest * 0.38;
+    base += vec3(0.06, 0.15, 0.075) * nearCrest * 0.31;
+    base *= 1.0 - shadow * 0.11;
+    base += vec3(0.04, 0.12, 0.055) * glow * 0.10;
+
+    float reflection = exp(-abs(y - middleWave - 0.075) * 25.0);
+    float reflectionLine = exp(-abs(y - farWave - 0.045) * 42.0);
+    float reflectionBreakup = 0.5 + 0.5 * sin(uv.x * 34.0 + time * 0.18);
+    base += vec3(0.11, 0.20, 0.14) * reflection * 0.055;
+    base += vec3(0.16, 0.23, 0.17) * reflectionLine * reflectionBreakup * 0.035;
+    float vignette = smoothstep(0.0, 0.9, length((uv - 0.5) * vec2(0.95, 1.05)));
+    base *= 1.0 - vignette * 0.055;
     gl_FragColor = vec4(base, 1.0);
 })";
     static const char* modelVertex = R"(precision highp float;
@@ -802,14 +817,36 @@ ProfileInputAction ProfileSelectionScreen::handleKey(int keyCode) {
         case AKEYCODE_DPAD_CENTER:
         case AKEYCODE_ENTER:
         case AKEYCODE_BUTTON_A:
+        case AKEYCODE_BUTTON_START:
             return ProfileInputAction::Confirm;
         case AKEYCODE_BACK:
         case AKEYCODE_ESCAPE:
         case AKEYCODE_BUTTON_B:
+        case AKEYCODE_BUTTON_SELECT:
             return ProfileInputAction::Back;
         default:
             return ProfileInputAction::None;
     }
+}
+
+ProfileInputAction ProfileSelectionScreen::handleJoystick(float leftX, float rightX,
+                                                          float hatX) {
+    float horizontal = std::abs(leftX) >= std::abs(rightX) ? leftX : rightX;
+    if (std::abs(hatX) > 0.5f) horizontal = hatX;
+    const int direction = horizontal < -0.55f ? -1 : horizontal > 0.55f ? 1 : 0;
+    if (direction == 0) {
+        joystickDirection_ = 0;
+        return ProfileInputAction::None;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (direction == joystickDirection_ && now < joystickRepeatAt_) {
+        return ProfileInputAction::None;
+    }
+
+    joystickDirection_ = direction;
+    joystickRepeatAt_ = now + std::chrono::milliseconds(300);
+    selectedProfile_ = (selectedProfile_ + 4 + direction) % 4;
+    return ProfileInputAction::None;
 }
 
 void ProfileSelectionScreen::setSelectedProfile(int index) {

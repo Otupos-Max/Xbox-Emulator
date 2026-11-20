@@ -1,5 +1,6 @@
 #include <android_native_app_glue.h>
 #include <android/asset_manager.h>
+#include <android/input.h>
 #include <android/keycodes.h>
 #include <aaudio/AAudio.h>
 #include <EGL/egl.h>
@@ -911,6 +912,18 @@ struct AppState {
             screen = Screen::ProfileSelect;
         }
     }
+
+    void handleControllerMotion(const AInputEvent* event) {
+        if (screen != Screen::ProfileSelect) return;
+        const float leftX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_X, 0);
+        float rightX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_RX, 0);
+        const float axisZ = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Z, 0);
+        const float axisRz = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_RZ, 0);
+        if (std::abs(axisZ) > std::abs(rightX)) rightX = axisZ;
+        if (std::abs(axisRz) > std::abs(rightX)) rightX = axisRz;
+        const float hatX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_X, 0);
+        applyProfileAction(profileSelection.handleJoystick(leftX, rightX, hatX));
+    }
 };
 
 void onAppCmd(android_app* app, int32_t cmd) {
@@ -954,6 +967,19 @@ int32_t onInputEvent(android_app* app, AInputEvent* event) {
         return 0;
     }
     if (AInputEvent_getType(event) != AINPUT_EVENT_TYPE_MOTION) return 0;
+    const int32_t source = AInputEvent_getSource(event);
+    const bool gamepadSource =
+        (source & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK ||
+        (source & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD ||
+        (source & AINPUT_SOURCE_DPAD) == AINPUT_SOURCE_DPAD;
+    if (gamepadSource) {
+        if (state->showingSplash) return 1;
+        if ((AMotionEvent_getAction(event) & AMOTION_EVENT_ACTION_MASK) ==
+            AMOTION_EVENT_ACTION_MOVE) {
+            state->handleControllerMotion(event);
+        }
+        return 1;
+    }
     if (AMotionEvent_getAction(event) == AMOTION_EVENT_ACTION_DOWN) {
         if (state->showingSplash) return 1;
         state->handleTouch(
