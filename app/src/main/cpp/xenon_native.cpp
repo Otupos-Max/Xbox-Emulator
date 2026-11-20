@@ -883,8 +883,7 @@ struct AppState {
         bool attached = false;
         const jint status = activity->vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
         if (status == JNI_EDETACHED) {
-            if (activity->vm->AttachCurrentThread(
-                    reinterpret_cast<void**>(&env), nullptr) != JNI_OK) {
+            if (activity->vm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
                 __android_log_print(ANDROID_LOG_ERROR, "Xenon",
                                     "Cannot attach to Android VM to open profile dialog");
                 return;
