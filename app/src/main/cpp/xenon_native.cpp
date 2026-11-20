@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <utility>
 #include <sys/types.h>
@@ -1080,11 +1081,16 @@ Java_com_xboxemulator_XenonActivity_nativeOnProfileCreated(
     if (!profileName) return;
     const char* utfName = env->GetStringUTFChars(profileName, nullptr);
     if (!utfName) return;
-    {
+    try {
         std::lock_guard<std::mutex> lock(pendingProfile.mutex);
         pendingProfile.name = utfName;
         pendingProfile.female = female == JNI_TRUE;
         pendingProfile.ready = true;
+    } catch (const std::exception& error) {
+        env->ReleaseStringUTFChars(profileName, utfName);
+        __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                            "Unable to queue the new profile: %s", error.what());
+        return;
     }
     env->ReleaseStringUTFChars(profileName, utfName);
 }
@@ -1107,7 +1113,12 @@ void android_main(android_app* app) {
         std::string createdName;
         bool createdFemale = false;
         if (takePendingProfile(createdName, createdFemale)) {
-            state.handleCreatedProfile(createdName, createdFemale);
+            try {
+                state.handleCreatedProfile(createdName, createdFemale);
+            } catch (const std::exception& error) {
+                __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                    "Profile creation failed: %s", error.what());
+            }
         }
         if (state.initialized) state.draw();
     }
