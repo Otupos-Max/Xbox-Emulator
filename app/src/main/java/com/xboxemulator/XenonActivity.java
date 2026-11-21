@@ -232,11 +232,11 @@ public class XenonActivity extends NativeActivity {
                 dialogWindow.setLayout(dialogWidth, WindowManager.LayoutParams.WRAP_CONTENT);
                 // Sem altura fixa: o Hub cresce até caber tudo e só rola se
                 // passar de 94% da tela, então os botões nunca são cortados.
-                dialogContent.setLayoutParams(new android.view.ViewGroup.LayoutParams(
-                        dialogWidth, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
                 int maxHeight = (int) (screenHeight * 0.94f);
+                boolean[] limited = {false};
                 dialogContent.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
-                    if (dialogContent.getHeight() > maxHeight) {
+                    if (!limited[0] && dialogContent.getHeight() > maxHeight) {
+                        limited[0] = true;
                         dialogWindow.setLayout(dialogWidth, maxHeight);
                     }
                 });
