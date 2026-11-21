@@ -1005,8 +1005,11 @@ ProfileInputAction ProfileSelectionScreen::handleTouch(float x, float y, float w
         const float left = layout.startX + i * (layout.width + layout.gap);
         if (x >= left && x <= left + layout.width &&
             y >= layout.top - 14.f && y <= layout.top + layout.height) {
-            if (selectedProfile_ == i ||
-                (!hasProfile() && i == createProfileIndex())) {
+            if (!hasProfile() && i == createProfileIndex()) {
+                selectedProfile_ = i;
+                return ProfileInputAction::CreateProfile;
+            }
+            if (selectedProfile_ == i) {
                 selectedProfile_ = i;
                 return selectedAction();
             }
@@ -1133,6 +1136,27 @@ bool ProfileSelectionScreen::createProfile(const std::string& name, bool female)
     if (cleaned.size() > 192 || cleaned.find('\n') != std::string::npos ||
         cleaned.find('\r') != std::string::npos) {
         return false;
+    }
+    if (!storagePath_.empty()) {
+        const std::string path = storagePath_ + "/xenon-profile.dat";
+        const std::string temporaryPath = path + ".tmp";
+        FILE* file = std::fopen(temporaryPath.c_str(), "wb");
+        if (!file) return false;
+        const int written = std::fprintf(file, "XENON_PROFILE_V1\n%c\n%s\n",
+                                         female ? 'F' : 'M', cleaned.c_str());
+        if (written < 0) {
+            std::fclose(file);
+            std::remove(temporaryPath.c_str());
+            return false;
+        }
+        if (std::fclose(file) != 0) {
+            std::remove(temporaryPath.c_str());
+            return false;
+        }
+        if (std::rename(temporaryPath.c_str(), path.c_str()) != 0) {
+            std::remove(temporaryPath.c_str());
+            return false;
+        }
     }
     profileName_ = std::move(cleaned);
     profileFemale_ = female;
