@@ -39,6 +39,12 @@ public class XenonActivity extends NativeActivity {
     private TextView profileError;
     private EditText nameInput;
 
+    static {
+        // NativeActivity abre a biblioteca com dlopen, o que não registra os
+        // métodos "native" do Java. Carregar aqui garante nativeOnProfileCreated.
+        System.loadLibrary("xenon_native");
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -74,23 +80,23 @@ public class XenonActivity extends NativeActivity {
                 return;
             }
 
-            int padding = dp(16);
+            int padding = dp(24);
             LinearLayout content = new LinearLayout(this);
             content.setOrientation(LinearLayout.VERTICAL);
-            content.setPadding(padding, dp(10), padding, dp(10));
+            content.setPadding(padding, dp(20), padding, dp(20));
             content.setBackground(roundedBackground(Color.WHITE, dp(20), Color.TRANSPARENT));
             content.setElevation(dp(14));
 
             TextView eyebrow = new TextView(this);
             eyebrow.setText("XENON  /  NOVO PERFIL");
-            eyebrow.setTextSize(10);
+            eyebrow.setTextSize(12);
             eyebrow.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             eyebrow.setTextColor(Color.rgb(28, 138, 72));
             content.addView(eyebrow);
 
             TextView title = new TextView(this);
             title.setText("Vamos criar sua conta");
-            title.setTextSize(19);
+            title.setTextSize(24);
             title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             title.setTextColor(Color.rgb(24, 31, 27));
             LinearLayout.LayoutParams titleParams = wrapParams();
@@ -99,7 +105,7 @@ public class XenonActivity extends NativeActivity {
 
             TextView subtitle = new TextView(this);
             subtitle.setText("Defina um nome e escolha seu avatar.");
-            subtitle.setTextSize(11);
+            subtitle.setTextSize(14);
             subtitle.setTextColor(Color.rgb(105, 115, 108));
             LinearLayout.LayoutParams subtitleParams = wrapParams();
             subtitleParams.topMargin = dp(1);
@@ -108,18 +114,19 @@ public class XenonActivity extends NativeActivity {
             LinearLayout formRow = new LinearLayout(this);
             formRow.setOrientation(LinearLayout.HORIZONTAL);
             LinearLayout.LayoutParams formParams = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, dp(96));
-            formParams.topMargin = dp(8);
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            formParams.topMargin = dp(16);
             content.addView(formRow, formParams);
 
             LinearLayout nameColumn = new LinearLayout(this);
             nameColumn.setOrientation(LinearLayout.VERTICAL);
-            formRow.addView(nameColumn, new LinearLayout.LayoutParams(0, -1, 1));
+            formRow.addView(nameColumn, new LinearLayout.LayoutParams(0, -2, 1));
             nameColumn.addView(label("NOME DA CONTA"));
 
             nameInput = new EditText(this);
             nameInput.setSingleLine(true);
-            nameInput.setTextSize(14);
+            nameInput.setTextSize(17);
             nameInput.setTextColor(Color.rgb(24, 31, 27));
             nameInput.setHintTextColor(Color.rgb(145, 153, 148));
             nameInput.setHint("Digite seu nome");
@@ -130,22 +137,22 @@ public class XenonActivity extends NativeActivity {
             nameInput.setPadding(dp(12), 0, dp(12), 0);
             nameInput.setBackground(roundedBackground(
                     Color.rgb(246, 248, 246), dp(12), Color.rgb(225, 230, 226)));
-            LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(-1, dp(48));
-            inputParams.topMargin = dp(7);
+            LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(-1, dp(56));
+            inputParams.topMargin = dp(8);
             nameColumn.addView(nameInput, inputParams);
 
             LinearLayout genderColumn = new LinearLayout(this);
             genderColumn.setOrientation(LinearLayout.VERTICAL);
             LinearLayout.LayoutParams genderColumnParams =
-                    new LinearLayout.LayoutParams(0, -1, 1.15f);
-            genderColumnParams.leftMargin = dp(16);
+                    new LinearLayout.LayoutParams(0, -2, 1.15f);
+            genderColumnParams.leftMargin = dp(20);
             formRow.addView(genderColumn, genderColumnParams);
             genderColumn.addView(label("ESCOLHA O AVATAR"));
 
             LinearLayout genderOptions = new LinearLayout(this);
             genderOptions.setOrientation(LinearLayout.HORIZONTAL);
-            LinearLayout.LayoutParams optionsParams = new LinearLayout.LayoutParams(-1, dp(68));
-            optionsParams.topMargin = dp(7);
+            LinearLayout.LayoutParams optionsParams = new LinearLayout.LayoutParams(-1, dp(84));
+            optionsParams.topMargin = dp(8);
             genderColumn.addView(genderOptions, optionsParams);
 
             LinearLayout maleOption = createGenderOption("M", "Masculino");
@@ -172,17 +179,19 @@ public class XenonActivity extends NativeActivity {
             updateGenderOptions.run();
 
             profileError = new TextView(this);
-            profileError.setTextSize(12);
+            profileError.setTextSize(14);
             profileError.setTextColor(Color.rgb(178, 45, 45));
             profileError.setVisibility(View.GONE);
             LinearLayout.LayoutParams errorParams = wrapParams();
-            errorParams.topMargin = dp(3);
+            errorParams.topMargin = dp(10);
             content.addView(profileError, errorParams);
 
             LinearLayout actions = new LinearLayout(this);
             actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-            LinearLayout.LayoutParams actionsParams = wrapParams();
-            actionsParams.topMargin = dp(5);
+            LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            actionsParams.topMargin = dp(18);
             content.addView(actions, actionsParams);
 
             TextView cancelButton = actionButton("Cancelar", false);
@@ -196,9 +205,12 @@ public class XenonActivity extends NativeActivity {
 
             ScrollView dialogContent = new ScrollView(this);
             dialogContent.setFillViewport(true);
-            dialogContent.addView(content);
+            dialogContent.addView(content, new ScrollView.LayoutParams(
+                    ScrollView.LayoutParams.MATCH_PARENT,
+                    ScrollView.LayoutParams.WRAP_CONTENT));
 
             profileDialog = new Dialog(this);
+            profileDialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
             profileDialog.setContentView(dialogContent);
             profileDialog.setCancelable(true);
             profileDialog.setOnDismissListener(dialog -> {
@@ -216,9 +228,18 @@ public class XenonActivity extends NativeActivity {
                                 | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
                 int screenWidth = getResources().getDisplayMetrics().widthPixels;
                 int screenHeight = getResources().getDisplayMetrics().heightPixels;
-                int dialogWidth = Math.min(dp(720), (int) (screenWidth * 0.92f));
-                int dialogHeight = Math.min(dp(280), (int) (screenHeight * 0.90f));
-                dialogWindow.setLayout(dialogWidth, dialogHeight);
+                int dialogWidth = Math.min(dp(760), (int) (screenWidth * 0.94f));
+                dialogWindow.setLayout(dialogWidth, WindowManager.LayoutParams.WRAP_CONTENT);
+                // Sem altura fixa: o Hub cresce até caber tudo e só rola se
+                // passar de 94% da tela, então os botões nunca são cortados.
+                dialogContent.setLayoutParams(new android.view.ViewGroup.LayoutParams(
+                        dialogWidth, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+                int maxHeight = (int) (screenHeight * 0.94f);
+                dialogContent.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+                    if (dialogContent.getHeight() > maxHeight) {
+                        dialogWindow.setLayout(dialogWidth, maxHeight);
+                    }
+                });
                 WindowManager.LayoutParams attributes = dialogWindow.getAttributes();
                 attributes.dimAmount = 0.62f;
                 dialogWindow.setAttributes(attributes);
@@ -311,15 +332,15 @@ public class XenonActivity extends NativeActivity {
 
         TextView icon = new TextView(this);
         icon.setText(marker);
-        icon.setTextSize(14);
+        icon.setTextSize(17);
         icon.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         icon.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(24), dp(24));
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(32), dp(32));
         option.addView(icon, iconParams);
 
         TextView titleView = new TextView(this);
         titleView.setText(title);
-        titleView.setTextSize(12);
+        titleView.setTextSize(15);
         titleView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         LinearLayout.LayoutParams titleParams = wrapParams();
         titleParams.topMargin = dp(3);
@@ -349,7 +370,7 @@ public class XenonActivity extends NativeActivity {
     private TextView label(String text) {
         TextView view = new TextView(this);
         view.setText(text);
-        view.setTextSize(11);
+        view.setTextSize(13);
         view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         view.setTextColor(Color.rgb(93, 105, 97));
         return view;
@@ -358,11 +379,12 @@ public class XenonActivity extends NativeActivity {
     private TextView actionButton(String text, boolean primary) {
         TextView button = new TextView(this);
         button.setText(text);
-        button.setTextSize(14);
+        button.setTextSize(16);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         button.setGravity(Gravity.CENTER);
-        button.setPadding(dp(18), 0, dp(18), 0);
-        button.setMinHeight(dp(40));
+        button.setPadding(dp(24), dp(12), dp(24), dp(12));
+        button.setMinHeight(dp(50));
+        button.setMinWidth(dp(130));
         button.setBackground(roundedBackground(
                 primary ? Color.rgb(31, 145, 70) : Color.rgb(242, 245, 242),
                 dp(14), primary ? Color.TRANSPARENT : Color.rgb(230, 234, 230)));
