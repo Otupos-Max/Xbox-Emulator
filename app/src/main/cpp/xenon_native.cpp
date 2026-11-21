@@ -728,7 +728,7 @@ struct AppState {
         return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
     }
 
-    void smoothText(const char* text, float x, float y, float scale, const Color& c) const {
+    void smoothText(const char* text, float x, float y, float scale, const Color& c) {
         profileSelection.drawText(text, x, y, scale, c.r, c.g, c.b, c.a);
     }
 
