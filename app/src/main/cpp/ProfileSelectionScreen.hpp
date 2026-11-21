@@ -27,6 +27,9 @@ public:
     void shutdown();
 
     void draw(float width, float height, float elapsedSeconds, const ProfileDrawApi& api);
+    void drawText(const char* text, float x, float y, float scale, float r, float g,
+                  float b, float a);
+    float textWidth(const char* text, float scale) const;
     ProfileInputAction handleTouch(float x, float y, float width, float height);
     ProfileInputAction handleKey(int keyCode);
     ProfileInputAction handleJoystick(float leftX, float rightX, float hatX);
@@ -68,9 +71,6 @@ private:
     bool loadFont(AAssetManager* assets);
     bool createPrograms();
     void drawBackground(float elapsedSeconds);
-    void drawText(const char* text, float x, float y, float scale, float r, float g,
-                  float b, float a);
-    float textWidth(const char* text, float scale) const;
     void drawModel(const Model& model, float centerX, float centerY, float scale,
                    float angle, float alpha, float verticalScale);
     void drawPortrait(const Model& model, float x, float y, float w, float h,

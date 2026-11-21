@@ -728,19 +728,36 @@ struct AppState {
         return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
     }
 
+    void smoothText(const char* text, float x, float y, float scale, const Color& c) const {
+        profileSelection.drawText(text, x, y, scale, c.r, c.g, c.b, c.a);
+    }
+
+    float smoothTextWidth(const char* text, float scale) const {
+        return profileSelection.textWidth(text, scale);
+    }
+
     void drawNavigation() {
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
         float barHeight = std::clamp(h * .09f, 58.f, 82.f);
-        renderer.rect(0, h - barHeight, w, barHeight, kPanel);
+        renderer.rect(0, h - barHeight, w, barHeight, kBg);
+        renderer.rect(0, h - barHeight, w, 1, kPanel2);
 
         const char* labels[] = {"INICIO", "BIBLIOTECA", "SISTEMA", "AJUSTES"};
         for (int i = 0; i < 4; ++i) {
             float itemW = w / 4.f;
             float x = itemW * i;
             bool active = static_cast<int>(screen) == i;
-            if (active) renderer.rect(x + itemW * .18f, h - barHeight + 5, itemW * .64f, 3, kGreen);
-            renderer.text(labels[i], x + itemW * .5f - 18.f, h - barHeight + 22.f, 3.1f, active ? kGreen : kMuted);
+            if (active) {
+                renderer.roundedRect(x + itemW * .18f, h - barHeight + 10,
+                                     itemW * .64f, barHeight - 20, kPanel);
+                renderer.roundedRect(x + itemW * .36f, h - barHeight + 16,
+                                     itemW * .28f, 4, kGreen);
+            }
+            const float labelScale = 3.1f;
+            const float labelWidth = smoothTextWidth(labels[i], labelScale);
+            smoothText(labels[i], x + itemW * .5f - labelWidth * .5f,
+                       h - barHeight + 40.f, labelScale, active ? kGreen : kMuted);
         }
     }
 
@@ -749,79 +766,126 @@ struct AppState {
         float h = static_cast<float>(renderer.height);
         float margin = std::clamp(w * .06f, 18.f, 42.f);
 
-        renderer.text("XENON", margin, 28, 5, kText);
-        renderer.text("NUCLEO EXPERIMENTAL", margin, 64, 3, kGreen);
-        renderer.text("PERFIL ATIVO", w - margin - 230.f, 28.f, 2.1f, kMuted);
-        renderer.text(profileSelection.activeProfileName(), w - margin - 230.f, 55.f,
-                       2.5f, kGreen);
+        smoothText("XENON", margin, 28, 7.f, kText);
+        smoothText("PAINEL PRINCIPAL", margin, 64, 3.2f, kGreen);
 
-        float heroY = 96;
-        float heroH = std::min(h * .34f, 260.f);
-        renderer.roundedRect(margin, heroY, w - margin * 2, heroH, kPanel2);
-        renderer.text("PROXIMO CAPITULO", margin + 20, heroY + 28, 5, kText);
-        renderer.text("COMECA AQUI", margin + 20, heroY + 62, 5, kText);
-        renderer.text("Emulacao Xbox 360 nativa", margin + 20, heroY + 96, 3, kMuted);
-        renderer.roundedRect(margin + 20, heroY + heroH - 58, 142, 38, kGreen);
-        renderer.text("ABRIR JOGO", margin + 43, heroY + heroH - 47, 3, kBg);
+        renderer.roundedRect(w - margin - 260.f, 24.f, 260.f, 58.f, kPanel);
+        renderer.roundedRect(w - margin - 244.f, 38.f, 30.f, 30.f, kGreen);
+        smoothText("PERFIL", w - margin - 204.f, 36.f, 2.2f, kMuted);
+        smoothText(profileSelection.activeProfileName(), w - margin - 204.f, 56.f,
+                   3.3f, kText);
 
-        float cardsY = heroY + heroH + 24;
-        float cardW = (w - margin * 2 - 24) / 2.f;
-        renderer.roundedRect(margin, cardsY, cardW, 104, kPanel);
-        renderer.text("BIBLIOTECA", margin + 16, cardsY + 20, 4, kText);
-        renderer.text("SEUS TITULOS", margin + 16, cardsY + 54, 3, kMuted);
-        renderer.roundedRect(margin + cardW + 24, cardsY, cardW, 104, kPanel);
-        renderer.text("SISTEMA", margin + cardW + 40, cardsY + 20, 4, kText);
-        renderer.text("512 MB RAM", margin + cardW + 40, cardsY + 54, 3, kMuted);
+        float heroY = 112.f;
+        float heroH = std::min(h * .31f, 238.f);
+        renderer.roundedRect(margin, heroY, w - margin * 2, heroH, kPanel);
+        renderer.roundedRect(margin, heroY, 10.f, heroH, kGreen);
+        smoothText("PRONTO PARA JOGAR", margin + 28.f, heroY + 30.f, 3.1f, kGreen);
+        smoothText("Seu Xbox 360.", margin + 28.f, heroY + 78.f, 8.f, kText);
+        smoothText("Em um lugar completamente novo.", margin + 28.f, heroY + 126.f,
+                   4.2f, kMuted);
+        renderer.roundedRect(margin + 28.f, heroY + heroH - 62.f, 180.f, 42.f, kGreen);
+        const char* openText = "ABRIR JOGO";
+        smoothText(openText, margin + 28.f + (180.f - smoothTextWidth(openText, 3.2f)) * .5f,
+                   heroY + heroH - 50.f, 3.2f, kBg);
 
-        renderer.text("ESTADO DO PROJETO", margin, cardsY + 132, 3.5f, kGreen);
-        renderer.roundedRect(margin, cardsY + 154, w - margin * 2, 76, kPanel);
-        renderer.text("MEMORIA     PPC 25 TESTES", margin + 16, cardsY + 178, 3.2f, kText);
-        renderer.roundedRect(margin + 16, cardsY + 207, w - margin * 2 - 32, 7, kPanel2);
-        renderer.roundedRect(margin + 16, cardsY + 207, (w - margin * 2 - 32) * .72f, 7, kGreen);
+        float cardsY = heroY + heroH + 24.f;
+        float cardW = (w - margin * 2 - 24.f) / 2.f;
+        renderer.roundedRect(margin, cardsY, cardW, 112.f, kBg);
+        renderer.rect(margin, cardsY, cardW, 1.f, kPanel2);
+        renderer.roundedRect(margin + 18.f, cardsY + 18.f, 36.f, 36.f, kPanel);
+        smoothText("01", margin + 26.f, cardsY + 29.f, 3.0f, kGreen);
+        smoothText("BIBLIOTECA", margin + 18.f, cardsY + 70.f, 4.2f, kText);
+        smoothText("Nenhum titulo carregado", margin + 18.f, cardsY + 92.f, 2.7f, kMuted);
+
+        renderer.roundedRect(margin + cardW + 24.f, cardsY, cardW, 112.f, kBg);
+        renderer.rect(margin + cardW + 24.f, cardsY, cardW, 1.f, kPanel2);
+        renderer.roundedRect(margin + cardW + 42.f, cardsY + 18.f, 36.f, 36.f, kGreen);
+        smoothText("ON", margin + cardW + 48.f, cardsY + 29.f, 2.4f, kBg);
+        smoothText("SISTEMA", margin + cardW + 42.f, cardsY + 70.f, 4.2f, kText);
+        smoothText("Xenon experimental", margin + cardW + 42.f, cardsY + 92.f, 2.7f, kMuted);
+
+        float statusY = cardsY + 134.f;
+        renderer.roundedRect(margin, statusY, w - margin * 2, 68.f, kPanel);
+        smoothText("ESTADO DO SISTEMA", margin + 18.f, statusY + 18.f, 2.5f, kMuted);
+        smoothText("25 testes  |  memoria 512 MB", margin + 18.f, statusY + 39.f, 3.2f, kText);
+        renderer.roundedRect(w - margin - 155.f, statusY + 20.f, 137.f, 28.f, kBg);
+        smoothText("OPERACIONAL", w - margin - 139.f, statusY + 29.f, 2.3f, kGreen);
     }
 
     void drawLibrary() {
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
         float margin = std::clamp(w * .06f, 18.f, 42.f);
-        renderer.text("BIBLIOTECA", margin, 38, 6, kText);
-        renderer.roundedRect(margin, 120, w - margin * 2, h - 250, kPanel);
-        renderer.text("SEM TITULOS", margin + 20, 155, 4, kMuted);
-        renderer.text("Prepare o carregador XEX", margin + 20, 190, 3, kMuted);
-        renderer.roundedRect(margin + 20, 225, 164, 42, kGreen);
-        renderer.text("ADICIONAR JOGO", margin + 42, 238, 3, kBg);
+        smoothText("BIBLIOTECA", margin, 42, 7.f, kText);
+        smoothText("Sua colecao de jogos", margin, 72, 3.2f, kMuted);
+        float cardY = 118.f;
+        renderer.roundedRect(margin, cardY, w - margin * 2, h - cardY - 112.f, kPanel);
+        renderer.roundedRect(margin + 32.f, cardY + 46.f, 82.f, 82.f, kBg);
+        renderer.roundedRect(margin + 55.f, cardY + 69.f, 36.f, 36.f, kGreen);
+        smoothText("X", margin + 67.f, cardY + 80.f, 4.0f, kBg);
+        smoothText("Nenhum jogo encontrado", margin + 138.f, cardY + 58.f, 5.0f, kText);
+        smoothText("Adicione um arquivo XEX para comecar.", margin + 138.f,
+                   cardY + 92.f, 3.2f, kMuted);
+        renderer.roundedRect(margin + 138.f, cardY + 128.f, 190.f, 44.f, kGreen);
+        const char* addText = "ADICIONAR JOGO";
+        smoothText(addText, margin + 138.f + (190.f - smoothTextWidth(addText, 3.1f)) * .5f,
+                   cardY + 141.f, 3.1f, kBg);
     }
 
     void drawSystem() {
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
         float margin = std::clamp(w * .06f, 18.f, 42.f);
-        renderer.text("SISTEMA", margin, 38, 6, kText);
+        smoothText("SISTEMA", margin, 42, 7.f, kText);
+        smoothText("Resumo do emulador", margin, 72, 3.2f, kMuted);
 
-        float cardY = 110;
-        renderer.roundedRect(margin, cardY, w - margin * 2, 150, kPanel);
-        renderer.text("MEMORIA UNIFICADA", margin + 18, cardY + 22, 3.5f, kGreen);
-        renderer.text("512 MB", margin + 18, cardY + 62, 7, kText);
-        renderer.roundedRect(margin + 18, cardY + 112, w - margin * 2 - 36, 10, kPanel2);
-        renderer.roundedRect(margin + 18, cardY + 112, (w - margin * 2 - 36) * .18f, 10, kGreen);
+        float cardY = 118.f;
+        float cardW = (w - margin * 2 - 24.f) / 2.f;
+        renderer.roundedRect(margin, cardY, cardW, 210.f, kPanel);
+        smoothText("MEMORIA", margin + 24.f, cardY + 24.f, 3.1f, kMuted);
+        smoothText("512 MB", margin + 24.f, cardY + 68.f, 8.f, kText);
+        smoothText("RAM UNIFICADA", margin + 24.f, cardY + 112.f, 3.2f, kGreen);
+        renderer.roundedRect(margin + 24.f, cardY + 158.f, cardW - 48.f, 10.f, kPanel2);
+        renderer.roundedRect(margin + 24.f, cardY + 158.f, (cardW - 48.f) * .18f, 10.f, kGreen);
 
-        renderer.roundedRect(margin, cardY + 170, w - margin * 2, 82, kPanel);
-        renderer.text("CPU XENON  3 CORES / 6 THREADS", margin + 18, cardY + 198, 3.3f, kText);
-        renderer.roundedRect(margin, cardY + 272, w - margin * 2, 82, kPanel);
-        renderer.text("XENOS GPU  NAO INICIADA", margin + 18, cardY + 300, 3.3f, kText);
+        renderer.roundedRect(margin + cardW + 24.f, cardY, cardW, 210.f, kBg);
+        renderer.rect(margin + cardW + 24.f, cardY, cardW, 1.f, kPanel2);
+        smoothText("PROCESSADOR", margin + cardW + 48.f, cardY + 24.f, 3.1f, kMuted);
+        smoothText("XENON", margin + cardW + 48.f, cardY + 68.f, 7.f, kText);
+        smoothText("3 nucleos  /  6 threads", margin + cardW + 48.f,
+                   cardY + 112.f, 3.3f, kGreen);
+        smoothText("Arquitetura PowerPC", margin + cardW + 48.f,
+                   cardY + 158.f, 3.0f, kMuted);
+
+        float gpuY = cardY + 234.f;
+        renderer.roundedRect(margin, gpuY, w - margin * 2, 92.f, kPanel);
+        renderer.roundedRect(margin + 18.f, gpuY + 18.f, 56.f, 56.f, kBg);
+        smoothText("GPU", margin + 29.f, gpuY + 38.f, 3.1f, kGreen);
+        smoothText("XENOS", margin + 92.f, gpuY + 22.f, 4.5f, kText);
+        smoothText("Nao iniciada", margin + 92.f, gpuY + 52.f, 3.2f, kMuted);
     }
 
     void drawSettings() {
         float w = static_cast<float>(renderer.width);
+        float h = static_cast<float>(renderer.height);
         float margin = std::clamp(w * .06f, 18.f, 42.f);
-        renderer.text("AJUSTES", margin, 38, 6, kText);
+        smoothText("AJUSTES", margin, 42, 7.f, kText);
+        smoothText("Configuracoes do aplicativo", margin, 72, 3.2f, kMuted);
         for (int i = 0; i < 3; ++i) {
             float y = 112.f + i * 92.f;
             renderer.roundedRect(margin, y, w - margin * 2, 76, kPanel);
-            const char* labels[] = {"VERIFICAR MEMORIA", "RASTREIO MMIO", "ESTENDER RELATORIO"};
-            renderer.text(labels[i], margin + 18, y + 28, 3.3f, kText);
-            renderer.roundedRect(w - margin - 68, y + 24, 50, 26, i == 0 ? kGreen : kPanel2);
+            const char* labels[] = {"VERIFICAR MEMORIA", "RASTREIO MMIO", "RELATORIO DE COMPATIBILIDADE"};
+            const char* descriptions[] = {"Executar diagnostico rapido",
+                                          "Monitorar chamadas do sistema",
+                                          "Gerar dados para depuracao"};
+            smoothText(labels[i], margin + 24.f, y + 20.f, 3.5f, kText);
+            smoothText(descriptions[i], margin + 24.f, y + 43.f, 2.7f, kMuted);
+            renderer.roundedRect(w - margin - 82.f, y + 24.f, 58.f, 28.f,
+                                 i == 0 ? kGreen : kPanel2);
+            renderer.roundedRect(w - margin - (i == 0 ? 59.f : 75.f),
+                                 y + 29.f, 18.f, 18.f, i == 0 ? kBg : kMuted);
         }
+        (void)h;
     }
 
     void drawSplash() {
