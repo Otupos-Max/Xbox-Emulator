@@ -14,8 +14,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <cstdlib>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <cmath>
 #include <chrono>
 #include <cstdint>
@@ -49,6 +52,24 @@ bool takePendingProfile(std::string& name, bool& female) {
     return true;
 }
 
+// Mesmo mecanismo do PendingProfile acima, mas para o termo de busca digitado
+// no dialogo da Xenon Store (nativeOnStoreSearch, chamado pelo Java).
+struct PendingSearch {
+    std::mutex mutex;
+    std::string query;
+    bool ready = false;
+};
+
+PendingSearch pendingSearch;
+
+bool takePendingSearch(std::string& query) {
+    std::lock_guard<std::mutex> lock(pendingSearch.mutex);
+    if (!pendingSearch.ready) return false;
+    query = std::move(pendingSearch.query);
+    pendingSearch.ready = false;
+    return true;
+}
+
 enum class Screen : int { Home, Store, Library, Settings, About, ProfileSelect };
 
 struct Rect { float x, y, w, h; };
@@ -68,6 +89,269 @@ constexpr float kSidebarW = 220.f;
 constexpr float kTopBarH = 64.f;
 constexpr float kNavItemH = 60.f;
 constexpr float kNavTopPad = 14.f;
+
+// ---------------------------------------------------------------------------
+// Xenon Store: cliente minimo da API publica de jogos. Sem biblioteca de JSON
+// disponivel no projeto, o parser abaixo e um recursive-descent bem pequeno,
+// o suficiente para o formato { count, games: [{ id, title, description,
+// link, cover, screenshots, created_at }] } que a API devolve.
+// ---------------------------------------------------------------------------
+
+struct JsonValue {
+    enum class Type { Null, Bool, Number, String, Array, Object };
+    Type type = Type::Null;
+    bool boolValue = false;
+    double numberValue = 0.0;
+    std::string stringValue;
+    std::vector<JsonValue> arrayValue;
+    std::vector<std::pair<std::string, JsonValue>> objectValue;
+
+    const JsonValue* find(const std::string& key) const {
+        for (const auto& entry : objectValue) {
+            if (entry.first == key) return &entry.second;
+        }
+        return nullptr;
+    }
+
+    std::string asString(const std::string& fallback = "") const {
+        if (type == Type::String) return stringValue;
+        if (type == Type::Number) {
+            char buffer[32];
+            std::snprintf(buffer, sizeof(buffer), "%.0f", numberValue);
+            return buffer;
+        }
+        return fallback;
+    }
+};
+
+class JsonParser {
+public:
+    explicit JsonParser(const std::string& text) : s(text) {}
+
+    bool parse(JsonValue& out) {
+        skipWs();
+        return parseValue(out);
+    }
+
+private:
+    const std::string& s;
+    size_t pos = 0;
+
+    void skipWs() {
+        while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+    }
+    char peek() const { return pos < s.size() ? s[pos] : '\0'; }
+    bool consume(char c) {
+        if (peek() == c) { ++pos; return true; }
+        return false;
+    }
+
+    bool parseValue(JsonValue& out) {
+        skipWs();
+        switch (peek()) {
+            case '{': return parseObject(out);
+            case '[': return parseArray(out);
+            case '"': return parseString(out);
+            case 't':
+            case 'f': return parseBool(out);
+            case 'n': return parseNull(out);
+            default: return parseNumber(out);
+        }
+    }
+
+    bool parseObject(JsonValue& out) {
+        out.type = JsonValue::Type::Object;
+        ++pos;
+        skipWs();
+        if (consume('}')) return true;
+        while (true) {
+            skipWs();
+            JsonValue key;
+            if (peek() != '"' || !parseString(key)) return false;
+            skipWs();
+            if (!consume(':')) return false;
+            JsonValue value;
+            if (!parseValue(value)) return false;
+            out.objectValue.emplace_back(std::move(key.stringValue), std::move(value));
+            skipWs();
+            if (consume(',')) continue;
+            if (consume('}')) break;
+            return false;
+        }
+        return true;
+    }
+
+    bool parseArray(JsonValue& out) {
+        out.type = JsonValue::Type::Array;
+        ++pos;
+        skipWs();
+        if (consume(']')) return true;
+        while (true) {
+            JsonValue value;
+            if (!parseValue(value)) return false;
+            out.arrayValue.push_back(std::move(value));
+            skipWs();
+            if (consume(',')) continue;
+            if (consume(']')) break;
+            return false;
+        }
+        return true;
+    }
+
+    bool parseString(JsonValue& out) {
+        out.type = JsonValue::Type::String;
+        if (!consume('"')) return false;
+        std::string& result = out.stringValue;
+        while (pos < s.size()) {
+            char c = s[pos++];
+            if (c == '"') return true;
+            if (c != '\\') {
+                result += c;
+                continue;
+            }
+            if (pos >= s.size()) return false;
+            char esc = s[pos++];
+            switch (esc) {
+                case '"': result += '"'; break;
+                case '\\': result += '\\'; break;
+                case '/': result += '/'; break;
+                case 'n': result += '\n'; break;
+                case 't': result += '\t'; break;
+                case 'r': result += '\r'; break;
+                case 'b': result += '\b'; break;
+                case 'f': result += '\f'; break;
+                case 'u': {
+                    if (pos + 4 > s.size()) return false;
+                    unsigned int code = 0;
+                    for (int i = 0; i < 4; ++i) {
+                        char h = s[pos++];
+                        code <<= 4;
+                        if (h >= '0' && h <= '9') code |= static_cast<unsigned int>(h - '0');
+                        else if (h >= 'a' && h <= 'f') code |= static_cast<unsigned int>(h - 'a' + 10);
+                        else if (h >= 'A' && h <= 'F') code |= static_cast<unsigned int>(h - 'A' + 10);
+                        else return false;
+                    }
+                    // So BMP (suficiente para titulos/descricoes de jogos).
+                    if (code < 0x80) {
+                        result += static_cast<char>(code);
+                    } else if (code < 0x800) {
+                        result += static_cast<char>(0xC0 | (code >> 6));
+                        result += static_cast<char>(0x80 | (code & 0x3F));
+                    } else {
+                        result += static_cast<char>(0xE0 | (code >> 12));
+                        result += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                        result += static_cast<char>(0x80 | (code & 0x3F));
+                    }
+                    break;
+                }
+                default: return false;
+            }
+        }
+        return false;
+    }
+
+    bool parseBool(JsonValue& out) {
+        if (s.compare(pos, 4, "true") == 0) {
+            out.type = JsonValue::Type::Bool;
+            out.boolValue = true;
+            pos += 4;
+            return true;
+        }
+        if (s.compare(pos, 5, "false") == 0) {
+            out.type = JsonValue::Type::Bool;
+            out.boolValue = false;
+            pos += 5;
+            return true;
+        }
+        return false;
+    }
+
+    bool parseNull(JsonValue& out) {
+        if (s.compare(pos, 4, "null") == 0) {
+            out.type = JsonValue::Type::Null;
+            pos += 4;
+            return true;
+        }
+        return false;
+    }
+
+    bool parseNumber(JsonValue& out) {
+        size_t start = pos;
+        if (peek() == '-') ++pos;
+        while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos]))) ++pos;
+        if (peek() == '.') {
+            ++pos;
+            while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos]))) ++pos;
+        }
+        if (peek() == 'e' || peek() == 'E') {
+            ++pos;
+            if (peek() == '+' || peek() == '-') ++pos;
+            while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos]))) ++pos;
+        }
+        if (pos == start) return false;
+        out.type = JsonValue::Type::Number;
+        out.numberValue = std::strtod(s.substr(start, pos - start).c_str(), nullptr);
+        return true;
+    }
+};
+
+// Um jogo do catalogo da Xenon Store, ja convertido dos campos do JSON.
+struct GameEntry {
+    std::string id;
+    std::string title;
+    std::string description;
+    std::string link;
+    std::string cover;
+    std::vector<std::string> screenshots;
+    std::string createdAt;
+};
+
+bool parseGamesResponse(const std::string& text, std::vector<GameEntry>& out) {
+    JsonValue root;
+    JsonParser parser(text);
+    if (!parser.parse(root) || root.type != JsonValue::Type::Object) return false;
+    const JsonValue* gamesNode = root.find("games");
+    if (!gamesNode || gamesNode->type != JsonValue::Type::Array) return false;
+
+    out.clear();
+    out.reserve(gamesNode->arrayValue.size());
+    for (const auto& item : gamesNode->arrayValue) {
+        if (item.type != JsonValue::Type::Object) continue;
+        GameEntry entry;
+        if (const auto* v = item.find("id")) entry.id = v->asString();
+        if (const auto* v = item.find("title")) entry.title = v->asString();
+        if (const auto* v = item.find("description")) entry.description = v->asString();
+        if (const auto* v = item.find("link")) entry.link = v->asString();
+        if (const auto* v = item.find("cover")) entry.cover = v->asString();
+        if (const auto* v = item.find("created_at")) entry.createdAt = v->asString();
+        if (const auto* v = item.find("screenshots"); v && v->type == JsonValue::Type::Array) {
+            for (const auto& shot : v->arrayValue) {
+                if (shot.type == JsonValue::Type::String) entry.screenshots.push_back(shot.stringValue);
+            }
+        }
+        out.push_back(std::move(entry));
+    }
+    return true;
+}
+
+// Percent-encoding simples para o parametro ?q= da busca.
+std::string urlEncode(const std::string& value) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(value.size() * 3);
+    for (unsigned char c : value) {
+        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            out += static_cast<char>(c);
+        } else if (c == ' ') {
+            out += '+';
+        } else {
+            out += '%';
+            out += hex[(c >> 4) & 0xF];
+            out += hex[c & 0xF];
+        }
+    }
+    return out;
+}
 
 struct Renderer {
     EGLDisplay display = EGL_NO_DISPLAY;
@@ -856,6 +1140,214 @@ GLuint createTextureFromRGBA(const uint8_t* pixels, int texWidth, int texHeight)
     return texture;
 }
 
+// ---------------------------------------------------------------------------
+// Rede (Xenon Store): chamadas sincronas de volta pro Java (HttpURLConnection
+// e BitmapFactory), sempre a partir de uma thread em segundo plano propria
+// (nunca a thread de renderizacao nem a UI thread do Android).
+// ---------------------------------------------------------------------------
+
+bool attachJniEnv(ANativeActivity* activity, JNIEnv*& env, bool& attached) {
+    attached = false;
+    if (!activity || !activity->vm) return false;
+    const jint status = activity->vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (status == JNI_EDETACHED) {
+        if (activity->vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return false;
+        attached = true;
+        return true;
+    }
+    return status == JNI_OK;
+}
+
+// Chama XenonActivity.httpGet(url) e devolve os bytes crus da resposta.
+bool httpGetBytes(ANativeActivity* activity, const std::string& url, std::vector<uint8_t>& out) {
+    if (!activity || !activity->clazz) return false;
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (!attachJniEnv(activity, env, attached)) return false;
+
+    bool ok = false;
+    jclass activityClass = env->GetObjectClass(activity->clazz);
+    jmethodID method = activityClass
+        ? env->GetMethodID(activityClass, "httpGet", "(Ljava/lang/String;)[B") : nullptr;
+    if (method) {
+        jstring jurl = env->NewStringUTF(url.c_str());
+        auto result = static_cast<jbyteArray>(env->CallObjectMethod(activity->clazz, method, jurl));
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+            result = nullptr;
+        }
+        if (result) {
+            const jsize length = env->GetArrayLength(result);
+            out.resize(static_cast<size_t>(std::max(length, 0)));
+            if (length > 0) {
+                env->GetByteArrayRegion(result, 0, length, reinterpret_cast<jbyte*>(out.data()));
+            }
+            ok = true;
+            env->DeleteLocalRef(result);
+        }
+        env->DeleteLocalRef(jurl);
+    }
+    if (activityClass) env->DeleteLocalRef(activityClass);
+    if (attached) activity->vm->DetachCurrentThread();
+    return ok;
+}
+
+// Chama XenonActivity.decodeBytesRGBA(bytes) e devolve pixels RGBA8 prontos
+// para virar uma textura GLES2 (na thread de renderizacao).
+bool decodeImageBytes(ANativeActivity* activity, const std::vector<uint8_t>& bytes,
+                      std::vector<uint8_t>& rgba, int& outWidth, int& outHeight) {
+    if (!activity || !activity->clazz || bytes.empty()) return false;
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (!attachJniEnv(activity, env, attached)) return false;
+
+    bool ok = false;
+    jclass activityClass = env->GetObjectClass(activity->clazz);
+    jmethodID method = activityClass
+        ? env->GetMethodID(activityClass, "decodeBytesRGBA", "([B)[I") : nullptr;
+    if (method) {
+        jbyteArray jbytes = env->NewByteArray(static_cast<jsize>(bytes.size()));
+        if (jbytes) {
+            env->SetByteArrayRegion(jbytes, 0, static_cast<jsize>(bytes.size()),
+                                    reinterpret_cast<const jbyte*>(bytes.data()));
+            auto result = static_cast<jintArray>(
+                env->CallObjectMethod(activity->clazz, method, jbytes));
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+                result = nullptr;
+            }
+            if (result) {
+                const jsize length = env->GetArrayLength(result);
+                if (length >= 2) {
+                    jint* data = env->GetIntArrayElements(result, nullptr);
+                    outWidth = data[0];
+                    outHeight = data[1];
+                    if (outWidth > 0 && outHeight > 0 &&
+                        static_cast<jsize>(2 + outWidth * outHeight) <= length) {
+                        rgba.resize(static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight) * 4);
+                        for (int i = 0; i < outWidth * outHeight; ++i) {
+                            const uint32_t pixel = static_cast<uint32_t>(data[2 + i]);
+                            rgba[i * 4 + 0] = static_cast<uint8_t>((pixel >> 16) & 0xFFu);
+                            rgba[i * 4 + 1] = static_cast<uint8_t>((pixel >> 8) & 0xFFu);
+                            rgba[i * 4 + 2] = static_cast<uint8_t>(pixel & 0xFFu);
+                            rgba[i * 4 + 3] = static_cast<uint8_t>((pixel >> 24) & 0xFFu);
+                        }
+                        ok = true;
+                    }
+                    env->ReleaseIntArrayElements(result, data, JNI_ABORT);
+                }
+                env->DeleteLocalRef(result);
+            }
+            env->DeleteLocalRef(jbytes);
+        }
+    }
+    if (activityClass) env->DeleteLocalRef(activityClass);
+    if (attached) activity->vm->DetachCurrentThread();
+    return ok;
+}
+
+// Lista de jogos da Xenon Store, buscada e atualizada em segundo plano.
+// games/loading/hasError/hasLoadedOnce sao lidos pela thread de desenho a
+// cada frame; o mutex protege apenas o vetor "games" em si.
+struct CatalogService {
+    std::mutex mutex;
+    std::vector<GameEntry> games;
+    std::atomic<bool> loading{false};
+    std::atomic<bool> hasError{false};
+    std::atomic<bool> hasLoadedOnce{false};
+    std::atomic<uint64_t> requestToken{0};
+    std::string currentQuery;
+
+    void fetchGames(ANativeActivity* activity, std::string query) {
+        currentQuery = query;
+        loading = true;
+        hasError = false;
+        const uint64_t myToken = ++requestToken;
+        std::thread([this, activity, query, myToken]() {
+            std::string url = "https://xbox-game-atlas.lovable.app/api/public/games";
+            if (!query.empty()) url += "?q=" + urlEncode(query);
+
+            std::vector<uint8_t> bytes;
+            const bool downloaded = httpGetBytes(activity, url, bytes);
+            std::vector<GameEntry> parsed;
+            bool parsedOk = false;
+            if (downloaded) {
+                std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                parsedOk = parseGamesResponse(text, parsed);
+            }
+
+            std::lock_guard<std::mutex> lock(mutex);
+            if (myToken != requestToken.load()) return; // uma busca mais nova ja comecou
+            if (downloaded && parsedOk) {
+                games = std::move(parsed);
+                hasError = false;
+            } else {
+                games.clear();
+                hasError = true;
+            }
+            hasLoadedOnce = true;
+            loading = false;
+        }).detach();
+    }
+
+    // Copia da lista atual pra desenhar sem segurar o lock durante o frame.
+    std::vector<GameEntry> snapshot() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return games;
+    }
+
+    bool findById(const std::string& id, GameEntry& out) {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (const auto& game : games) {
+            if (game.id == id) {
+                out = game;
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+// Uma imagem (capa ou captura de tela) ja baixada e decodificada, esperando
+// para ser enviada pra GPU pela thread de renderizacao.
+struct DecodedTexture {
+    std::string url;
+    int width = 0;
+    int height = 0;
+    std::vector<uint8_t> rgba; // vazio == falhou ao baixar/decodificar
+};
+
+// Fila thread-safe entre as threads de download e a thread de renderizacao.
+struct TextureLoader {
+    std::mutex mutex;
+    std::vector<DecodedTexture> queue;
+
+    void push(DecodedTexture&& item) {
+        std::lock_guard<std::mutex> lock(mutex);
+        queue.push_back(std::move(item));
+    }
+
+    std::vector<DecodedTexture> drain() {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::vector<DecodedTexture> out;
+        out.swap(queue);
+        return out;
+    }
+};
+
+// Geometria calculada da tela da Xenon Store (barra de busca + grade de
+// cards), usada tanto para desenhar quanto para testar toques, pra nao haver
+// risco das duas contas saírem diferentes.
+struct StoreLayout {
+    float x0 = 0.f, y0 = 0.f, contentW = 0.f;
+    float searchBarY = 0.f, searchBarH = 0.f;
+    float gridY = 0.f;
+    float cardW = 0.f, cardH = 0.f, gap = 0.f;
+    int columns = 4, rows = 2, maxVisible = 8;
+};
+
 struct AppState {
     Renderer renderer;
     SplashVideo splashVideo;
@@ -878,9 +1370,22 @@ struct AppState {
     bool logoLoadAttempted = false;
     float logoAspect = 1.f;
 
+    // Xenon Store: catalogo remoto, cache de texturas (capas/capturas) e o
+    // estado da tela de detalhes do jogo selecionado.
+    CatalogService catalog;
+    TextureLoader textureLoader;
+    std::unordered_map<std::string, GLuint> coverTextures;
+    std::unordered_map<std::string, bool> coverRequested;
+    std::string storeSearchQuery;
+    bool showGameDetail = false;
+    std::string selectedGameId;
+    int detailScreenshotIndex = 0;
+
     void initializeRenderer() {
         logoTexture = 0;
         logoLoadAttempted = false;
+        coverTextures.clear();
+        coverRequested.clear();
         rendererInitialized = renderer.initialize(window);
         if (!rendererInitialized) {
             __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to initialize the app renderer");
@@ -955,6 +1460,114 @@ struct AppState {
         if (attached) activity->vm->DetachCurrentThread();
     }
 
+    // Dispara (uma vez por URL) o download+decodificacao de uma capa ou
+    // captura de tela em segundo plano; o resultado chega via textureLoader.
+    void requestCoverTexture(const std::string& url) {
+        if (url.empty()) return;
+        if (coverTextures.find(url) != coverTextures.end()) return;
+        auto it = coverRequested.find(url);
+        if (it != coverRequested.end() && it->second) return;
+        coverRequested[url] = true;
+
+        ANativeActivity* act = activity;
+        TextureLoader* loader = &textureLoader;
+        std::thread([act, loader, url]() {
+            DecodedTexture result;
+            result.url = url;
+            std::vector<uint8_t> bytes;
+            if (httpGetBytes(act, url, bytes)) {
+                int w = 0, h = 0;
+                std::vector<uint8_t> rgba;
+                if (decodeImageBytes(act, bytes, rgba, w, h)) {
+                    result.width = w;
+                    result.height = h;
+                    result.rgba = std::move(rgba);
+                }
+            }
+            loader->push(std::move(result));
+        }).detach();
+    }
+
+    // Chamado uma vez por frame: sobe pra GPU as imagens que ja terminaram de
+    // baixar/decodificar em segundo plano (so pode rodar na thread de GL).
+    void pumpTextureUploads() {
+        for (auto& item : textureLoader.drain()) {
+            if (!item.rgba.empty() && item.width > 0 && item.height > 0) {
+                coverTextures[item.url] = createTextureFromRGBA(item.rgba.data(), item.width, item.height);
+            } else {
+                coverTextures[item.url] = 0; // tentou e falhou; evita baixar de novo toda hora
+            }
+        }
+    }
+
+    // Textura pronta para uma URL (capa/captura), ou 0 se ainda nao chegou;
+    // dispara o download na primeira vez que a URL e pedida.
+    GLuint coverTexture(const std::string& url) {
+        if (url.empty()) return 0;
+        auto it = coverTextures.find(url);
+        if (it != coverTextures.end()) return it->second;
+        requestCoverTexture(url);
+        return 0;
+    }
+
+    void requestSearchDialog() {
+        if (!activity || !activity->vm || !activity->clazz) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Cannot open search dialog: Android activity is unavailable");
+            return;
+        }
+        JNIEnv* env = nullptr;
+        bool attached = false;
+        if (!attachJniEnv(activity, env, attached)) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon",
+                                "Cannot attach to Android VM to open search dialog");
+            return;
+        }
+        jclass activityClass = env->GetObjectClass(activity->clazz);
+        jmethodID showDialog = activityClass
+            ? env->GetMethodID(activityClass, "showSearchDialog", "(Ljava/lang/String;)V") : nullptr;
+        if (showDialog) {
+            jstring query = env->NewStringUTF(storeSearchQuery.c_str());
+            env->CallVoidMethod(activity->clazz, showDialog, query);
+            env->DeleteLocalRef(query);
+        }
+        if (activityClass) env->DeleteLocalRef(activityClass);
+        if (attached) activity->vm->DetachCurrentThread();
+    }
+
+    void handleSearchSubmitted(const std::string& query) {
+        storeSearchQuery = query;
+        catalog.fetchGames(activity, query);
+    }
+
+    void openGameDetail(const std::string& id) {
+        selectedGameId = id;
+        showGameDetail = true;
+        detailScreenshotIndex = 0;
+    }
+
+    void closeGameDetail() {
+        showGameDetail = false;
+        selectedGameId.clear();
+    }
+
+    void openExternalLink(const std::string& url) {
+        if (url.empty() || !activity || !activity->vm || !activity->clazz) return;
+        JNIEnv* env = nullptr;
+        bool attached = false;
+        if (!attachJniEnv(activity, env, attached)) return;
+        jclass activityClass = env->GetObjectClass(activity->clazz);
+        jmethodID openMethod = activityClass
+            ? env->GetMethodID(activityClass, "openExternalLink", "(Ljava/lang/String;)V") : nullptr;
+        if (openMethod) {
+            jstring jurl = env->NewStringUTF(url.c_str());
+            env->CallVoidMethod(activity->clazz, openMethod, jurl);
+            env->DeleteLocalRef(jurl);
+        }
+        if (activityClass) env->DeleteLocalRef(activityClass);
+        if (attached) activity->vm->DetachCurrentThread();
+    }
+
     void initializeWindow(ANativeWindow* newWindow, ANativeActivity* nativeActivity,
                           AAssetManager* assets,
                           const char* storagePath) {
@@ -987,6 +1600,39 @@ struct AppState {
 
     float smoothTextWidth(const char* text, float scale) const {
         return profileSelection.textWidth(text, scale);
+    }
+
+    // Quebra um texto em linhas que cabem em maxWidth, pra desenhar paragrafos
+    // (por exemplo a descricao de um jogo na tela de detalhes).
+    std::vector<std::string> wrapText(const std::string& text, float maxWidth, float scale) {
+        std::vector<std::string> lines;
+        std::string current;
+        std::string word;
+        auto flushWord = [&]() {
+            if (word.empty()) return;
+            std::string candidate = current.empty() ? word : current + " " + word;
+            if (!current.empty() && smoothTextWidth(candidate.c_str(), scale) > maxWidth) {
+                lines.push_back(current);
+                current = word;
+            } else {
+                current = candidate;
+            }
+            word.clear();
+        };
+        for (char c : text) {
+            if (c == ' ' || c == '\n') {
+                flushWord();
+                if (c == '\n') {
+                    lines.push_back(current);
+                    current.clear();
+                }
+            } else {
+                word += c;
+            }
+        }
+        flushWord();
+        if (!current.empty()) lines.push_back(current);
+        return lines;
     }
 
     // Barra superior (logo, status) e barra lateral de navegacao, desenhadas
@@ -1170,15 +1816,258 @@ struct AppState {
         }
     }
 
+    StoreLayout computeStoreLayout() {
+        StoreLayout L;
+        const float w = static_cast<float>(renderer.width);
+        const float h = static_cast<float>(renderer.height);
+        L.x0 = kSidebarW + 28.f;
+        L.y0 = kTopBarH + 28.f;
+        L.contentW = w - kSidebarW - 56.f;
+        L.searchBarY = L.y0 + 46.f;
+        L.searchBarH = 52.f;
+        L.gridY = L.searchBarY + L.searchBarH + 24.f;
+        L.columns = 4;
+        L.gap = 16.f;
+        L.cardW = (L.contentW - L.gap * (L.columns - 1)) / static_cast<float>(L.columns);
+        L.rows = 2;
+        const float available = h - L.gridY - 24.f;
+        L.cardH = std::min(215.f, (available - L.gap * (L.rows - 1)) / static_cast<float>(L.rows));
+        L.maxVisible = L.columns * L.rows;
+        return L;
+    }
+
     void drawStore() {
-        float w = static_cast<float>(renderer.width);
-        float h = static_cast<float>(renderer.height);
-        const float x0 = kSidebarW + 28.f;
-        const float y0 = kTopBarH + 28.f;
-        smoothText("XENON STORE", x0, y0, 7.f, kText);
-        smoothText("Em breve: catalogo de jogos para baixar", x0, y0 + 30.f, 3.0f, kMuted);
-        renderer.roundedRect(x0, y0 + 46.f, w - kSidebarW - 56.f, h - y0 - 46.f - 24.f, kPanel);
-        smoothText("Nenhuma loja conectada ainda", x0 + 24.f, y0 + 80.f, 3.2f, kMuted);
+        const float h = static_cast<float>(renderer.height);
+        const StoreLayout L = computeStoreLayout();
+        const bool loading = catalog.loading.load();
+        const bool hasError = catalog.hasError.load();
+        const bool loadedOnce = catalog.hasLoadedOnce.load();
+
+        // Dispara a primeira busca assim que a loja e aberta pela primeira vez.
+        if (!loadedOnce && !loading) {
+            catalog.fetchGames(activity, storeSearchQuery);
+        }
+
+        std::vector<GameEntry> games = catalog.snapshot();
+        smoothText("XENON STORE", L.x0, L.y0, 7.f, kText);
+        char subtitle[128];
+        if (loading) {
+            std::snprintf(subtitle, sizeof(subtitle), "Carregando catalogo...");
+        } else if (hasError) {
+            std::snprintf(subtitle, sizeof(subtitle), "Nao foi possivel carregar os jogos agora");
+        } else if (!storeSearchQuery.empty()) {
+            std::snprintf(subtitle, sizeof(subtitle), "%d resultado(s) para \"%s\"",
+                         static_cast<int>(games.size()), storeSearchQuery.c_str());
+        } else {
+            std::snprintf(subtitle, sizeof(subtitle), "%d jogo(s) no catalogo",
+                         static_cast<int>(games.size()));
+        }
+        smoothText(subtitle, L.x0, L.y0 + 30.f, 2.6f, kMuted);
+
+        // Barra de busca (toque abre o dialogo nativo de busca do Android).
+        renderer.roundedRect(L.x0, L.searchBarY, L.contentW, L.searchBarH, kPanel, 12.f);
+        renderer.roundedRect(L.x0 + 16.f, L.searchBarY + L.searchBarH * .5f - 9.f, 18.f, 18.f, kMuted, 9.f);
+        const std::string placeholder = storeSearchQuery.empty() ? "Buscar jogos..." : storeSearchQuery;
+        smoothText(placeholder.c_str(), L.x0 + 46.f, L.searchBarY + L.searchBarH * .5f - 9.f, 2.6f,
+                   storeSearchQuery.empty() ? kMuted : kText);
+        const char* searchHint = "TOQUE PARA BUSCAR";
+        smoothText(searchHint, L.x0 + L.contentW - smoothTextWidth(searchHint, 1.8f) - 16.f,
+                   L.searchBarY + L.searchBarH * .5f - 7.f, 1.8f, kGreen);
+
+        if (loading) {
+            // Skeleton de carregamento: blocos cinza "pulsando" no lugar dos cards.
+            const auto now = std::chrono::steady_clock::now();
+            const float t = std::chrono::duration<float>(now.time_since_epoch()).count();
+            const float pulse = 0.5f + 0.5f * std::sin(t * 3.f);
+            for (int i = 0; i < L.maxVisible; ++i) {
+                const int col = i % L.columns;
+                const int row = i / L.columns;
+                const float cardX = L.x0 + col * (L.cardW + L.gap);
+                const float cardY = L.gridY + row * (L.cardH + L.gap);
+                const Color shade{kPanel2.r, kPanel2.g, kPanel2.b, 0.5f + 0.3f * pulse};
+                renderer.roundedRect(cardX, cardY, L.cardW, L.cardH, shade, 16.f);
+            }
+            return;
+        }
+
+        if (hasError) {
+            renderer.roundedRect(L.x0, L.gridY, L.contentW, h - L.gridY - 24.f, kPanel, 16.f);
+            smoothText("Nao foi possivel carregar os jogos agora.",
+                       L.x0 + 28.f, L.gridY + 36.f, 3.2f, kText);
+            smoothText("Verifique sua conexao com a internet e tente novamente.",
+                       L.x0 + 28.f, L.gridY + 68.f, 2.4f, kMuted);
+            renderer.roundedRect(L.x0 + 28.f, L.gridY + 100.f, 220.f, 44.f, kGreen, 22.f);
+            const char* retryText = "TENTAR NOVAMENTE";
+            smoothText(retryText, L.x0 + 28.f + (220.f - smoothTextWidth(retryText, 2.4f)) * .5f,
+                       L.gridY + 113.f, 2.4f, kBg);
+            return;
+        }
+
+        if (games.empty()) {
+            renderer.roundedRect(L.x0, L.gridY, L.contentW, h - L.gridY - 24.f, kPanel, 16.f);
+            const char* emptyTitle = storeSearchQuery.empty() ? "Nenhum jogo no catalogo ainda"
+                                                              : "Nenhum jogo encontrado";
+            smoothText(emptyTitle, L.x0 + 28.f, L.gridY + 36.f, 3.6f, kText);
+            const char* emptySubtitle = storeSearchQuery.empty()
+                ? "Volte mais tarde para conferir novidades."
+                : "Tente buscar por outro termo.";
+            smoothText(emptySubtitle, L.x0 + 28.f, L.gridY + 72.f, 2.6f, kMuted);
+            return;
+        }
+
+        const Color accents[5] = {
+            kGreen,
+            Color{0.360f, 0.620f, 0.980f, 1.f},
+            Color{0.980f, 0.690f, 0.260f, 1.f},
+            Color{0.760f, 0.420f, 0.980f, 1.f},
+            Color{0.260f, 0.870f, 0.780f, 1.f},
+        };
+        const int visibleCount = std::min(static_cast<int>(games.size()), L.maxVisible);
+        for (int i = 0; i < visibleCount; ++i) {
+            const GameEntry& game = games[i];
+            const int col = i % L.columns;
+            const int row = i / L.columns;
+            const float cardX = L.x0 + col * (L.cardW + L.gap);
+            const float cardY = L.gridY + row * (L.cardH + L.gap);
+            const Color& accent = accents[i % 5];
+            const float coverH = L.cardH * .68f;
+
+            renderer.roundedRect(cardX, cardY, L.cardW, L.cardH, kPanel, 16.f);
+            const GLuint cover = coverTexture(game.cover);
+            if (cover != 0) {
+                renderer.texturedRect(cardX, cardY, L.cardW, coverH, cover);
+            } else {
+                const Color coverColor{accent.r * .18f, accent.g * .18f, accent.b * .18f, 1.f};
+                renderer.roundedRectCorners(cardX, cardY, L.cardW, coverH, coverColor, 16.f, 16.f, 0.f, 0.f);
+                const std::string initial = game.title.empty() ? "?" : game.title.substr(0, 1);
+                const float scale = 5.4f;
+                const float iw = smoothTextWidth(initial.c_str(), scale);
+                smoothText(initial.c_str(), cardX + (L.cardW - iw) * .5f, cardY + coverH * .5f - 24.f,
+                           scale, accent);
+                renderer.rect(cardX, cardY, L.cardW, 3.f, accent);
+            }
+
+            std::string title = game.title.empty() ? "Sem titulo" : game.title;
+            while (title.size() > 4 && smoothTextWidth(title.c_str(), 2.0f) > L.cardW - 20.f) {
+                title.pop_back();
+            }
+            if (title != game.title) title += "...";
+            smoothText(title.c_str(), cardX + 12.f, cardY + coverH + 14.f, 2.0f, kText);
+        }
+
+        if (static_cast<int>(games.size()) > visibleCount) {
+            char more[64];
+            std::snprintf(more, sizeof(more), "+%d jogo(s) - refine sua busca para ver mais",
+                         static_cast<int>(games.size()) - visibleCount);
+            smoothText(more, L.x0,
+                       L.gridY + L.rows * L.cardH + (L.rows - 1) * L.gap + 28.f, 2.2f, kMuted);
+        }
+    }
+
+    // Modal de detalhes do jogo selecionado na Xenon Store: capa, titulo,
+    // descricao, botao para abrir o link externo e o carrossel de capturas.
+    void drawGameDetailOverlay() {
+        const float w = static_cast<float>(renderer.width);
+        const float h = static_cast<float>(renderer.height);
+        GameEntry game;
+        if (!catalog.findById(selectedGameId, game)) {
+            closeGameDetail();
+            return;
+        }
+
+        renderer.rect(0, 0, w, h, Color{0.f, 0.f, 0.f, .68f});
+
+        const float panelW = std::min(960.f, w - 80.f);
+        const float panelH = std::min(600.f, h - 64.f);
+        const float panelX = (w - panelW) * .5f;
+        const float panelY = (h - panelH) * .5f;
+        renderer.roundedRect(panelX, panelY, panelW, panelH, kPanel, 20.f);
+
+        const float closeSize = 36.f;
+        const float closeX = panelX + panelW - closeSize - 18.f;
+        const float closeY = panelY + 18.f;
+        renderer.roundedRect(closeX, closeY, closeSize, closeSize, kPanel2, 10.f);
+        smoothText("X", closeX + 12.f, closeY + 8.f, 3.2f, kText);
+
+        const float coverW = 220.f;
+        const float coverH = 300.f;
+        const float coverX = panelX + 28.f;
+        const float coverY = panelY + 28.f;
+        const GLuint cover = coverTexture(game.cover);
+        if (cover != 0) {
+            renderer.texturedRect(coverX, coverY, coverW, coverH, cover);
+        } else {
+            renderer.roundedRect(coverX, coverY, coverW, coverH, kPanel2, 14.f);
+            const std::string initial = game.title.empty() ? "?" : game.title.substr(0, 1);
+            const float scale = 7.f;
+            const float iw = smoothTextWidth(initial.c_str(), scale);
+            smoothText(initial.c_str(), coverX + (coverW - iw) * .5f, coverY + coverH * .5f - 30.f,
+                       scale, kGreen);
+        }
+
+        const float textX = coverX + coverW + 28.f;
+        const float textW = panelX + panelW - 28.f - textX;
+        const std::string title = game.title.empty() ? "Jogo sem titulo" : game.title;
+        smoothText(title.c_str(), textX, coverY, 5.2f, kText);
+
+        const std::string description = game.description.empty()
+            ? "Sem descricao disponivel para este jogo."
+            : game.description;
+        const std::vector<std::string> lines = wrapText(description, textW, 2.4f);
+        const int maxLines = 6;
+        float lineY = coverY + 50.f;
+        for (int i = 0; i < static_cast<int>(lines.size()) && i < maxLines; ++i) {
+            smoothText(lines[i].c_str(), textX, lineY, 2.4f, kMuted);
+            lineY += 26.f;
+        }
+        if (static_cast<int>(lines.size()) > maxLines) {
+            smoothText("...", textX, lineY, 2.4f, kMuted);
+        }
+
+        const float openW = 200.f;
+        const float openY = coverY + coverH - 44.f;
+        renderer.roundedRect(textX, openY, openW, 44.f, kGreen, 22.f);
+        const char* openText = "ABRIR NO NAVEGADOR";
+        const float openScale = 1.9f;
+        smoothText(openText, textX + (openW - smoothTextWidth(openText, openScale)) * .5f,
+                   openY + 15.f, openScale, kBg);
+
+        // Carrossel de capturas de tela.
+        const float shotsY = coverY + coverH + 28.f;
+        const float shotsH = panelY + panelH - shotsY - 24.f;
+        if (!game.screenshots.empty() && shotsH > 60.f) {
+            const int count = static_cast<int>(game.screenshots.size());
+            detailScreenshotIndex = ((detailScreenshotIndex % count) + count) % count;
+            const std::string& shotUrl = game.screenshots[static_cast<size_t>(detailScreenshotIndex)];
+            const float shotW = panelW - 56.f - 96.f;
+            const float shotX = panelX + 28.f + 48.f;
+            renderer.roundedRect(shotX, shotsY, shotW, shotsH, kBg, 12.f);
+            const GLuint shotTex = coverTexture(shotUrl);
+            if (shotTex != 0) {
+                renderer.texturedRect(shotX, shotsY, shotW, shotsH, shotTex);
+            } else {
+                smoothText("Carregando...", shotX + 16.f, shotsY + shotsH * .5f - 9.f, 2.2f, kMuted);
+            }
+
+            renderer.roundedRect(panelX + 28.f, shotsY + shotsH * .5f - 18.f, 36.f, 36.f, kPanel2, 10.f);
+            smoothText("<", panelX + 28.f + 12.f, shotsY + shotsH * .5f - 9.f, 2.6f, kText);
+            renderer.roundedRect(panelX + panelW - 28.f - 36.f, shotsY + shotsH * .5f - 18.f, 36.f, 36.f,
+                                 kPanel2, 10.f);
+            smoothText(">", panelX + panelW - 28.f - 36.f + 13.f, shotsY + shotsH * .5f - 9.f, 2.6f, kText);
+
+            const float dotsY = shotsY + shotsH + 10.f;
+            if (dotsY + 8.f < panelY + panelH) {
+                const int visibleDots = std::min(count, 10);
+                const float totalDots = visibleDots * 16.f;
+                const float dotsX = shotX + (shotW - totalDots) * .5f;
+                for (int i = 0; i < visibleDots; ++i) {
+                    renderer.roundedRect(dotsX + i * 16.f, dotsY, 8.f, 8.f,
+                                         i == detailScreenshotIndex ? kGreen : kPanel2, 4.f);
+                }
+            }
+        } else {
+            smoothText("Sem capturas de tela disponiveis.", panelX + 28.f, shotsY, 2.4f, kMuted);
+        }
     }
 
     void drawLibrary() {
@@ -1380,6 +2269,7 @@ struct AppState {
             renderer.present();
             return;
         }
+        pumpTextureUploads();
         switch (screen) {
             case Screen::Home: drawHome(); break;
             case Screen::Store: drawStore(); break;
@@ -1389,6 +2279,7 @@ struct AppState {
             case Screen::ProfileSelect: drawProfileSelect(); break;
         }
         if (screen != Screen::ProfileSelect) drawChrome();
+        if (showGameDetail) drawGameDetailOverlay();
         renderer.present();
     }
 
@@ -1399,6 +2290,57 @@ struct AppState {
             return;
         }
         float w = static_cast<float>(renderer.width);
+        float h = static_cast<float>(renderer.height);
+
+        // Modal de detalhes do jogo: captura todo toque enquanto estiver
+        // aberto (inclusive fora dele, pra fechar).
+        if (showGameDetail) {
+            const float panelW = std::min(960.f, w - 80.f);
+            const float panelH = std::min(600.f, h - 64.f);
+            const float panelX = (w - panelW) * .5f;
+            const float panelY = (h - panelH) * .5f;
+
+            const float closeSize = 36.f;
+            const float closeX = panelX + panelW - closeSize - 18.f;
+            const float closeY = panelY + 18.f;
+            if (x >= closeX && x < closeX + closeSize && y >= closeY && y < closeY + closeSize) {
+                closeGameDetail();
+                return;
+            }
+            if (x < panelX || x >= panelX + panelW || y < panelY || y >= panelY + panelH) {
+                closeGameDetail();
+                return;
+            }
+
+            const float coverW = 220.f, coverH = 300.f;
+            const float coverX = panelX + 28.f, coverY = panelY + 28.f;
+            const float textX = coverX + coverW + 28.f;
+            const float openW = 200.f;
+            const float openY = coverY + coverH - 44.f;
+            if (x >= textX && x < textX + openW && y >= openY && y < openY + 44.f) {
+                GameEntry game;
+                if (catalog.findById(selectedGameId, game)) openExternalLink(game.link);
+                return;
+            }
+
+            GameEntry game;
+            const float shotsY = coverY + coverH + 28.f;
+            const float shotsH = panelY + panelH - shotsY - 24.f;
+            if (catalog.findById(selectedGameId, game) && !game.screenshots.empty() && shotsH > 60.f) {
+                const int count = static_cast<int>(game.screenshots.size());
+                if (x >= panelX + 28.f && x < panelX + 28.f + 36.f &&
+                    y >= shotsY + shotsH * .5f - 18.f && y < shotsY + shotsH * .5f + 18.f) {
+                    detailScreenshotIndex = (detailScreenshotIndex - 1 + count) % count;
+                    return;
+                }
+                if (x >= panelX + panelW - 28.f - 36.f && x < panelX + panelW - 28.f &&
+                    y >= shotsY + shotsH * .5f - 18.f && y < shotsY + shotsH * .5f + 18.f) {
+                    detailScreenshotIndex = (detailScreenshotIndex + 1) % count;
+                    return;
+                }
+            }
+            return; // qualquer outro toque dentro do modal nao faz nada
+        }
 
         // Barra lateral: cada item ocupa uma faixa vertical fixa.
         if (x < kSidebarW && y >= kTopBarH) {
@@ -1410,6 +2352,40 @@ struct AppState {
             return;
         }
         if (y < kTopBarH) return;
+
+        // Tela da Xenon Store: barra de busca, botao de nova tentativa e os
+        // cards do catalogo.
+        if (screen == Screen::Store) {
+            const StoreLayout L = computeStoreLayout();
+            if (x >= L.x0 && x < L.x0 + L.contentW && y >= L.searchBarY && y < L.searchBarY + L.searchBarH) {
+                requestSearchDialog();
+                return;
+            }
+            const bool loading = catalog.loading.load();
+            const bool hasError = catalog.hasError.load();
+            if (hasError && !loading) {
+                if (x >= L.x0 + 28.f && x < L.x0 + 28.f + 220.f &&
+                    y >= L.gridY + 100.f && y < L.gridY + 144.f) {
+                    catalog.fetchGames(activity, storeSearchQuery);
+                }
+                return;
+            }
+            if (!loading) {
+                std::vector<GameEntry> games = catalog.snapshot();
+                const int visibleCount = std::min(static_cast<int>(games.size()), L.maxVisible);
+                for (int i = 0; i < visibleCount; ++i) {
+                    const int col = i % L.columns;
+                    const int row = i / L.columns;
+                    const float cardX = L.x0 + col * (L.cardW + L.gap);
+                    const float cardY = L.gridY + row * (L.cardH + L.gap);
+                    if (x >= cardX && x < cardX + L.cardW && y >= cardY && y < cardY + L.cardH) {
+                        openGameDetail(games[i].id);
+                        return;
+                    }
+                }
+            }
+            return;
+        }
 
         if (screen == Screen::Home) {
             const float margin = 28.f;
@@ -1435,6 +2411,33 @@ struct AppState {
     }
 
     void handleKey(int keyCode) {
+        if (showGameDetail) {
+            switch (keyCode) {
+                case AKEYCODE_BACK:
+                case AKEYCODE_ESCAPE:
+                case AKEYCODE_BUTTON_B:
+                case AKEYCODE_BUTTON_SELECT:
+                    closeGameDetail();
+                    break;
+                case AKEYCODE_DPAD_LEFT:
+                    --detailScreenshotIndex;
+                    break;
+                case AKEYCODE_DPAD_RIGHT:
+                    ++detailScreenshotIndex;
+                    break;
+                case AKEYCODE_DPAD_CENTER:
+                case AKEYCODE_ENTER:
+                case AKEYCODE_BUTTON_A:
+                case AKEYCODE_BUTTON_START: {
+                    GameEntry game;
+                    if (catalog.findById(selectedGameId, game)) openExternalLink(game.link);
+                    break;
+                }
+                default:
+                    break;
+            }
+            return;
+        }
         if (screen == Screen::ProfileSelect) {
             applyProfileAction(profileSelection.handleKey(keyCode));
             return;
@@ -1650,6 +2653,22 @@ Java_com_xboxemulator_XenonActivity_nativeOnProfileCreated(
     return JNI_TRUE;
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_xboxemulator_XenonActivity_nativeOnStoreSearch(
+    JNIEnv* env, jobject, jstring query) {
+    std::string text;
+    if (query) {
+        const char* utfQuery = env->GetStringUTFChars(query, nullptr);
+        if (utfQuery) {
+            text = utfQuery;
+            env->ReleaseStringUTFChars(query, utfQuery);
+        }
+    }
+    std::lock_guard<std::mutex> lock(pendingSearch.mutex);
+    pendingSearch.query = std::move(text);
+    pendingSearch.ready = true;
+}
+
 void android_main(android_app* app) {
     AppState state;
     app->userData = &state;
@@ -1679,6 +2698,10 @@ void android_main(android_app* app) {
                 message = "Ocorreu um erro ao criar o perfil. Tente novamente.";
             }
             state.notifyProfileCreationResult(created, created ? "" : message);
+        }
+        std::string submittedQuery;
+        if (takePendingSearch(submittedQuery)) {
+            state.handleSearchSubmitted(submittedQuery);
         }
         if (state.initialized) state.draw();
     }
