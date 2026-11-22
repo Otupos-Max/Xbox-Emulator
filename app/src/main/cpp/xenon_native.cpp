@@ -685,6 +685,9 @@ struct AppState {
     ANativeWindow* window = nullptr;
     ANativeActivity* activity = nullptr;
     AAssetManager* assetManager = nullptr;
+    int focusedNavigation = static_cast<int>(Screen::Home);
+    int controllerDirection = 0;
+    std::chrono::steady_clock::time_point controllerRepeatAt;
     std::string profileStoragePath;
     std::chrono::steady_clock::time_point splashStarted;
     std::chrono::steady_clock::time_point profileSelectionStarted;
@@ -748,68 +751,93 @@ struct AppState {
             float itemW = w / 4.f;
             float x = itemW * i;
             bool active = static_cast<int>(screen) == i;
-            if (active) {
+            bool focused = focusedNavigation == i;
+            if (active || focused) {
                 renderer.roundedRect(x + itemW * .18f, h - barHeight + 10,
                                      itemW * .64f, barHeight - 20, kPanel);
                 renderer.roundedRect(x + itemW * .36f, h - barHeight + 16,
-                                     itemW * .28f, 4, kGreen);
+                                     itemW * .28f, 4, focused ? kGreen : kPanel2);
             }
             const float labelScale = 3.1f;
             const float labelWidth = smoothTextWidth(labels[i], labelScale);
             smoothText(labels[i], x + itemW * .5f - labelWidth * .5f,
-                       h - barHeight + 40.f, labelScale, active ? kGreen : kMuted);
+                       h - barHeight + 40.f, labelScale,
+                       active || focused ? kGreen : kMuted);
         }
     }
 
     void drawHome() {
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
-        float margin = std::clamp(w * .06f, 18.f, 42.f);
+        const float margin = std::clamp(w * .045f, 28.f, 48.f);
 
-        smoothText("XENON", margin, 28, 7.f, kText);
-        smoothText("PAINEL PRINCIPAL", margin, 64, 3.2f, kGreen);
+        renderer.roundedRect(margin, 24.f, 46.f, 46.f, kGreen);
+        renderer.rotatedRect(margin + 23.f, 47.f, 29.f, 5.f, .785398f, kBg);
+        renderer.rotatedRect(margin + 23.f, 47.f, 29.f, 5.f, -.785398f, kBg);
+        smoothText("XENON", margin + 58.f, 25.f, 6.5f, kText);
+        smoothText("PAINEL PRINCIPAL", margin + 58.f, 59.f, 2.8f, kGreen);
 
-        renderer.roundedRect(w - margin - 260.f, 24.f, 260.f, 58.f, kPanel);
-        renderer.roundedRect(w - margin - 244.f, 38.f, 30.f, 30.f, kGreen);
-        smoothText("PERFIL", w - margin - 204.f, 36.f, 2.2f, kMuted);
-        smoothText(profileSelection.activeProfileName(), w - margin - 204.f, 56.f,
-                   3.3f, kText);
+        const float profileW = 294.f;
+        const float profileX = w - margin - profileW;
+        renderer.roundedRect(profileX, 22.f, profileW, 58.f, kPanel);
+        renderer.roundedRect(profileX + 12.f, 35.f, 32.f, 32.f, kGreen);
+        smoothText("X", profileX + 21.f, 42.f, 3.f, kBg);
+        smoothText("PERFIL ATIVO", profileX + 56.f, 30.f, 2.1f, kMuted);
+        const char* activeName = profileSelection.activeProfileName();
+        const float nameScale = std::min(
+            3.f, 220.f / std::max(smoothTextWidth(activeName, 1.f), 1.f));
+        smoothText(activeName, profileX + 56.f, 51.f, nameScale, kText);
 
-        float heroY = 112.f;
-        float heroH = std::min(h * .31f, 238.f);
-        renderer.roundedRect(margin, heroY, w - margin * 2, heroH, kPanel);
-        renderer.roundedRect(margin, heroY, 10.f, heroH, kGreen);
-        smoothText("PRONTO PARA JOGAR", margin + 28.f, heroY + 30.f, 3.1f, kGreen);
-        smoothText("Seu Xbox 360.", margin + 28.f, heroY + 78.f, 8.f, kText);
-        smoothText("Em um lugar completamente novo.", margin + 28.f, heroY + 126.f,
-                   4.2f, kMuted);
-        renderer.roundedRect(margin + 28.f, heroY + heroH - 62.f, 180.f, 42.f, kGreen);
-        const char* openText = "ABRIR JOGO";
-        smoothText(openText, margin + 28.f + (180.f - smoothTextWidth(openText, 3.2f)) * .5f,
-                   heroY + heroH - 50.f, 3.2f, kBg);
+        const float heroY = 100.f;
+        const float heroH = std::min(h * .36f, 258.f);
+        const float heroW = w - margin * 2.f;
+        renderer.roundedRect(margin, heroY, heroW, heroH, kPanel);
+        renderer.roundedRect(margin, heroY, 8.f, heroH, kGreen);
+        smoothText("EMULADOR XBOX 360", margin + 30.f, heroY + 30.f, 2.8f, kGreen);
+        smoothText("SEU XBOX, NO CELULAR", margin + 30.f, heroY + 76.f, 6.8f, kText);
+        smoothText("Biblioteca e emulador, tudo em um so lugar.",
+                   margin + 30.f, heroY + 112.f, 3.2f, kMuted);
+        const float openW = 244.f;
+        const float openY = heroY + heroH - 58.f;
+        renderer.roundedRect(margin + 30.f, openY, openW, 40.f, kGreen);
+        const char* openText = "VER BIBLIOTECA";
+        smoothText(openText, margin + 30.f + (openW - smoothTextWidth(openText, 2.6f)) * .5f,
+                   openY + 12.f, 2.6f, kBg);
 
-        float cardsY = heroY + heroH + 24.f;
-        float cardW = (w - margin * 2 - 24.f) / 2.f;
-        renderer.roundedRect(margin, cardsY, cardW, 112.f, kBg);
+        const float markSize = std::min(174.f, heroH - 38.f);
+        const float markX = w - margin - markSize - 42.f;
+        const float markY = heroY + (heroH - markSize) * .5f;
+        renderer.roundedRect(markX, markY, markSize, markSize,
+                             Color{.89f, .94f, .91f, 1.f});
+        renderer.rotatedRect(markX + markSize * .5f, markY + markSize * .5f,
+                             markSize * .62f, 11.f, .785398f, kGreen);
+        renderer.rotatedRect(markX + markSize * .5f, markY + markSize * .5f,
+                             markSize * .62f, 11.f, -.785398f, kGreen);
+
+        const float cardsY = heroY + heroH + 16.f;
+        const float cardH = 100.f;
+        const float cardW = (w - margin * 2.f - 16.f) / 2.f;
+        renderer.roundedRect(margin, cardsY, cardW, cardH, kBg);
         renderer.rect(margin, cardsY, cardW, 1.f, kPanel2);
-        renderer.roundedRect(margin + 18.f, cardsY + 18.f, 36.f, 36.f, kPanel);
-        smoothText("01", margin + 26.f, cardsY + 29.f, 3.0f, kGreen);
-        smoothText("BIBLIOTECA", margin + 18.f, cardsY + 70.f, 4.2f, kText);
-        smoothText("Nenhum titulo carregado", margin + 18.f, cardsY + 92.f, 2.7f, kMuted);
+        renderer.roundedRect(margin + 18.f, cardsY + 22.f, 38.f, 38.f, kPanel);
+        smoothText("01", margin + 26.f, cardsY + 33.f, 3.f, kGreen);
+        smoothText("BIBLIOTECA", margin + 70.f, cardsY + 30.f, 3.8f, kText);
+        smoothText("Nenhum titulo carregado", margin + 70.f, cardsY + 58.f, 2.5f, kMuted);
 
-        renderer.roundedRect(margin + cardW + 24.f, cardsY, cardW, 112.f, kBg);
-        renderer.rect(margin + cardW + 24.f, cardsY, cardW, 1.f, kPanel2);
-        renderer.roundedRect(margin + cardW + 42.f, cardsY + 18.f, 36.f, 36.f, kGreen);
-        smoothText("ON", margin + cardW + 48.f, cardsY + 29.f, 2.4f, kBg);
-        smoothText("SISTEMA", margin + cardW + 42.f, cardsY + 70.f, 4.2f, kText);
-        smoothText("Xenon experimental", margin + cardW + 42.f, cardsY + 92.f, 2.7f, kMuted);
+        const float secondX = margin + cardW + 16.f;
+        renderer.roundedRect(secondX, cardsY, cardW, cardH, kBg);
+        renderer.rect(secondX, cardsY, cardW, 1.f, kPanel2);
+        renderer.roundedRect(secondX + 18.f, cardsY + 22.f, 38.f, 38.f, kGreen);
+        smoothText("ON", secondX + 25.f, cardsY + 34.f, 2.6f, kBg);
+        smoothText("SISTEMA", secondX + 70.f, cardsY + 30.f, 3.8f, kText);
+        smoothText("Emulador experimental", secondX + 70.f, cardsY + 58.f, 2.5f, kMuted);
 
-        float statusY = cardsY + 134.f;
-        renderer.roundedRect(margin, statusY, w - margin * 2, 68.f, kPanel);
-        smoothText("ESTADO DO SISTEMA", margin + 18.f, statusY + 18.f, 2.5f, kMuted);
-        smoothText("25 testes  |  memoria 512 MB", margin + 18.f, statusY + 39.f, 3.2f, kText);
-        renderer.roundedRect(w - margin - 155.f, statusY + 20.f, 137.f, 28.f, kBg);
-        smoothText("OPERACIONAL", w - margin - 139.f, statusY + 29.f, 2.3f, kGreen);
+        const float statusY = cardsY + cardH + 12.f;
+        renderer.roundedRect(margin, statusY, w - margin * 2.f, 44.f, kPanel);
+        renderer.roundedRect(margin + 14.f, statusY + 13.f, 18.f, 18.f, kGreen);
+        smoothText("SISTEMA PRONTO", margin + 44.f, statusY + 17.f, 2.5f, kText);
+        smoothText("TOQUE NOS CARTOES  |  CONTROLE: SETAS NAVEGAM  A ABRE  X PERFIS",
+                   margin + 250.f, statusY + 17.f, 2.1f, kMuted);
     }
 
     void drawLibrary() {
@@ -1027,14 +1055,40 @@ struct AppState {
         }
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
-        if (screen == Screen::Home && y < 90.f && x > w - 300.f) {
+        const float margin = std::clamp(w * .045f, 28.f, 48.f);
+        const float profileW = 294.f;
+        const float profileX = w - margin - profileW;
+        if (screen == Screen::Home && y >= 22.f && y < 80.f &&
+            x >= profileX && x < profileX + profileW) {
             profileSelection.setSelectedProfile(profileSelection.activeProfile());
             screen = Screen::ProfileSelect;
+            return;
+        }
+        const float heroY = 100.f;
+        const float heroH = std::min(h * .36f, 258.f);
+        if (screen == Screen::Home && y >= heroY && y < heroY + heroH &&
+            x >= margin && x < w - margin) {
+            focusedNavigation = static_cast<int>(Screen::Library);
+            screen = Screen::Library;
+            return;
+        }
+        const float cardY = heroY + heroH + 16.f;
+        const float cardW = (w - margin * 2.f - 16.f) / 2.f;
+        if (screen == Screen::Home && y >= cardY && y < cardY + 100.f) {
+            if (x >= margin && x < margin + cardW) {
+                focusedNavigation = static_cast<int>(Screen::Library);
+            } else if (x >= margin + cardW + 16.f && x < w - margin) {
+                focusedNavigation = static_cast<int>(Screen::System);
+            } else {
+                return;
+            }
+            screen = static_cast<Screen>(focusedNavigation);
             return;
         }
         float barHeight = std::clamp(h * .09f, 58.f, 82.f);
         if (y >= h - barHeight) {
             int index = std::clamp(static_cast<int>(x / (w / 4.f)), 0, 3);
+            focusedNavigation = index;
             screen = static_cast<Screen>(index);
             return;
         }
@@ -1043,9 +1097,39 @@ struct AppState {
     void handleKey(int keyCode) {
         if (screen == Screen::ProfileSelect) {
             applyProfileAction(profileSelection.handleKey(keyCode));
-        } else if (screen == Screen::Home && keyCode == AKEYCODE_BUTTON_X) {
-            profileSelection.setSelectedProfile(profileSelection.activeProfile());
-            screen = Screen::ProfileSelect;
+            return;
+        }
+        switch (keyCode) {
+            case AKEYCODE_DPAD_LEFT:
+                focusedNavigation = (focusedNavigation + 3) % 4;
+                break;
+            case AKEYCODE_DPAD_RIGHT:
+                focusedNavigation = (focusedNavigation + 1) % 4;
+                break;
+            case AKEYCODE_DPAD_CENTER:
+            case AKEYCODE_ENTER:
+            case AKEYCODE_BUTTON_A:
+            case AKEYCODE_BUTTON_START:
+                screen = static_cast<Screen>(focusedNavigation);
+                break;
+            case AKEYCODE_BUTTON_X:
+                profileSelection.setSelectedProfile(profileSelection.activeProfile());
+                screen = Screen::ProfileSelect;
+                break;
+            case AKEYCODE_BACK:
+            case AKEYCODE_ESCAPE:
+            case AKEYCODE_BUTTON_B:
+            case AKEYCODE_BUTTON_SELECT:
+                if (screen == Screen::Home) {
+                    profileSelection.setSelectedProfile(profileSelection.activeProfile());
+                    screen = Screen::ProfileSelect;
+                } else {
+                    screen = Screen::Home;
+                    focusedNavigation = static_cast<int>(Screen::Home);
+                }
+                break;
+            default:
+                break;
         }
     }
 
@@ -1106,7 +1190,6 @@ struct AppState {
     }
 
     void handleControllerMotion(const AInputEvent* event) {
-        if (screen != Screen::ProfileSelect) return;
         const float leftX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_X, 0);
         float rightX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_RX, 0);
         const float axisZ = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Z, 0);
@@ -1114,7 +1197,23 @@ struct AppState {
         if (std::abs(axisZ) > std::abs(rightX)) rightX = axisZ;
         if (std::abs(axisRz) > std::abs(rightX)) rightX = axisRz;
         const float hatX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_X, 0);
-        applyProfileAction(profileSelection.handleJoystick(leftX, rightX, hatX));
+        if (screen == Screen::ProfileSelect) {
+            applyProfileAction(profileSelection.handleJoystick(leftX, rightX, hatX));
+            return;
+        }
+
+        float horizontal = std::abs(leftX) >= std::abs(rightX) ? leftX : rightX;
+        if (std::abs(hatX) > .5f) horizontal = hatX;
+        const int direction = horizontal < -.55f ? -1 : horizontal > .55f ? 1 : 0;
+        if (direction == 0) {
+            controllerDirection = 0;
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (direction == controllerDirection && now < controllerRepeatAt) return;
+        controllerDirection = direction;
+        controllerRepeatAt = now + std::chrono::milliseconds(300);
+        focusedNavigation = (focusedNavigation + 4 + direction) % 4;
     }
 };
 
