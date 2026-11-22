@@ -2,6 +2,8 @@ package com.xboxemulator;
 
 import android.app.Dialog;
 import android.app.NativeActivity;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -23,6 +25,7 @@ import android.widget.TextView;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
@@ -415,6 +418,38 @@ public class XenonActivity extends NativeActivity {
     }
 
     private native boolean nativeOnProfileCreated(String name, boolean female);
+
+    /**
+     * Chamado pelo codigo nativo (xenon_native.cpp) para carregar a logo do
+     * app a partir dos assets, por exemplo "logo/logo.png". Decodifica o PNG
+     * com o BitmapFactory e devolve os pixels em formato que o nativo sabe
+     * ler: result[0] = largura, result[1] = altura, result[2..] = pixels
+     * ARGB_8888 (um int por pixel), linha por linha. Devolve null se o
+     * arquivo nao existir em app/src/main/assets ou nao puder ser lido.
+     */
+    public int[] decodeAssetBitmapRGBA(String assetPath) {
+        try (InputStream stream = getAssets().open(assetPath)) {
+            Bitmap bitmap = BitmapFactory.decodeStream(stream);
+            if (bitmap == null) {
+                Log.e(TAG, "Não foi possível decodificar " + assetPath);
+                return null;
+            }
+            int width = bitmap.getWidth();
+            int height = bitmap.getHeight();
+            int[] pixels = new int[width * height];
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+            bitmap.recycle();
+
+            int[] result = new int[2 + pixels.length];
+            result[0] = width;
+            result[1] = height;
+            System.arraycopy(pixels, 0, result, 2, pixels.length);
+            return result;
+        } catch (IOException | OutOfMemoryError error) {
+            Log.e(TAG, "Não foi possível carregar " + assetPath + " dos assets", error);
+            return null;
+        }
+    }
 
     @SuppressWarnings("deprecation")
     private void hideSystemBars() {
