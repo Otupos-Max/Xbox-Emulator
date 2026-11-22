@@ -1733,6 +1733,8 @@ struct AppState {
         const float profileX = w - margin - profileW;
         const float profileY = y0 + margin;
         renderer.roundedRect(profileX, profileY, profileW, profileH, kPanel);
+        renderer.rect(profileX + 14.f, profileY + profileH - 3.f, profileW - 28.f, 2.f,
+                  Color{kGreen.r, kGreen.g, kGreen.b, .58f});
         renderer.roundedRect(profileX + 14.f, profileY + 14.f, 42.f, 42.f, kGreen);
         smoothText("X", profileX + 28.f, profileY + 25.f, 3.4f, kBg);
         const char* activeName = profileSelection.activeProfileName();
@@ -1744,8 +1746,21 @@ struct AppState {
         const float heroY = y0 + margin;
         const float heroH = 258.f;
         const float heroW = contentW - margin * 2.f - profileW - 18.f;
-        renderer.roundedRect(x0 + margin, heroY, heroW, heroH, kPanel);
+        const float heroX = x0 + margin;
+        renderer.roundedRect(heroX, heroY, heroW, heroH, kPanel);
+        renderer.roundedRectCorners(heroX + 6.f, heroY + 1.f, heroW - 7.f, heroH - 2.f,
+                        Color{.085f, .125f, .103f, 1.f}, 15.f, 15.f, 15.f, 15.f);
         renderer.rect(x0 + margin, heroY, 6.f, heroH, kGreen);
+
+        const float motifX = heroX + heroW - 76.f;
+        renderer.rotatedRect(motifX, heroY + heroH * .5f, 150.f, 8.f, .785398f,
+                     Color{kGreen.r, kGreen.g, kGreen.b, .10f});
+        renderer.rotatedRect(motifX, heroY + heroH * .5f, 150.f, 8.f, -.785398f,
+                     Color{kGreen.r, kGreen.g, kGreen.b, .10f});
+        renderer.roundedRect(motifX - 40.f, heroY + heroH * .5f - 40.f, 80.f, 80.f,
+                     Color{.11f, .18f, .14f, .62f}, 40.f);
+        renderer.roundedRect(motifX - 29.f, heroY + heroH * .5f - 29.f, 58.f, 58.f,
+                     Color{.13f, .22f, .16f, .8f}, 29.f);
 
         const float markSize = 110.f;
         const float markX = x0 + margin + 30.f;
@@ -1768,20 +1783,20 @@ struct AppState {
         }
 
         const float textX = markX + markSize + 34.f;
-        smoothText("BEM-VINDO AO", textX, heroY + 44.f, 3.0f, kGreen);
+        smoothText("SISTEMA DE ENTRETENIMENTO", textX, heroY + 34.f, 2.0f, kMuted);
+        smoothText("BEM-VINDO AO", textX, heroY + 58.f, 3.0f, kGreen);
         smoothText("XENON", textX, heroY + 78.f, 8.2f, kText);
         smoothText("Sua nova experiencia em jogos comeca aqui.",
-                   textX, heroY + 142.f, 3.0f, kMuted);
-        const float exploreW = 176.f;
+               textX, heroY + 142.f, 2.7f, kMuted);
+        const float exploreW = 188.f;
         const float exploreY = heroY + heroH - 56.f;
         renderer.roundedRect(textX, exploreY, exploreW, 40.f, kGreen, 20.f);
         const char* exploreText = "EXPLORAR";
         smoothText(exploreText, textX + (exploreW - smoothTextWidth(exploreText, 2.8f)) * .5f,
                    exploreY + 13.f, 2.8f, kBg);
-        for (int dot = 0; dot < 3; ++dot) {
-            renderer.roundedRect(textX + exploreW + 26.f + dot * 16.f, exploreY + 16.f, 8.f, 8.f,
-                                 dot == 0 ? kGreen : kPanel2);
-        }
+        renderer.rect(textX + exploreW + 22.f, exploreY + 9.f, 1.f, 22.f, kPanel2);
+        smoothText("DESCUBRA A BIBLIOTECA", textX + exploreW + 38.f, exploreY + 13.f,
+                   1.8f, kMuted);
 
         // Linha "Destaques": vitrine dos jogos em destaque.
         const float destaquesY = heroY + heroH + 24.f;
@@ -1829,6 +1844,8 @@ struct AppState {
             smoothText(titles[i], cardX + 14.f, cardsY + coverH + 16.f, 2.1f, kText);
             renderer.roundedRect(cardX + 14.f, cardsY + coverH + 40.f, 64.f, 20.f, accent, 6.f);
             smoothText("INSTALAR", cardX + 14.f + 9.f, cardsY + coverH + 45.f, 1.5f, kBg);
+            renderer.rect(cardX + cardW - 24.f, cardsY + coverH + 46.f, 10.f, 2.f,
+                          Color{accent.r, accent.g, accent.b, .7f});
         }
     }
 

@@ -37,16 +37,16 @@ struct Color {
     float a;
 };
 
-constexpr Color kText{0.10f, 0.11f, 0.12f, 1.f};
+constexpr Color kText{0.933f, 0.961f, 0.945f, 1.f};
 constexpr Color kWhite{0.98f, 0.98f, 0.98f, 1.f};
-constexpr Color kGreen{0.20f, 0.68f, 0.08f, 1.f};
-constexpr Color kGreenBright{0.42f, 0.95f, 0.22f, 1.f};
-constexpr Color kOnline{0.38f, 0.86f, 0.10f, 1.f};
+constexpr Color kGreen{0.212f, 0.871f, 0.408f, 1.f};
+constexpr Color kGreenBright{0.48f, 0.96f, 0.56f, 1.f};
+constexpr Color kOnline{0.38f, 0.86f, 0.44f, 1.f};
 constexpr Color kOffline{0.42f, 0.43f, 0.45f, 1.f};
-constexpr Color kRed{0.80f, 0.10f, 0.12f, 1.f};
-constexpr Color kCardTop{0.62f, 0.63f, 0.66f, 0.92f};
-constexpr Color kCardBottom{0.90f, 0.91f, 0.92f, 0.94f};
-constexpr Color kSilhouette{0.86f, 0.87f, 0.89f, 1.f};
+constexpr Color kRed{0.94f, 0.25f, 0.28f, 1.f};
+constexpr Color kCardTop{0.12f, 0.17f, 0.14f, 0.98f};
+constexpr Color kCardBottom{0.16f, 0.21f, 0.18f, 0.98f};
+constexpr Color kSilhouette{0.72f, 0.79f, 0.74f, 1.f};
 
 struct CardLayout {
     float startX;
@@ -325,14 +325,21 @@ float ribbon(float y, float center, float thickness, float softness) {
 }
 void main() {
     float y = 1.0 - uv.y;
-    // Studio grey: darker ceiling, bright horizon, soft reflective floor.
-    vec3 top = vec3(0.26, 0.27, 0.29);
-    vec3 mid = vec3(0.80, 0.81, 0.83);
-    vec3 floorColor = vec3(0.72, 0.73, 0.76);
+    vec3 top = vec3(0.035, 0.055, 0.043);
+    vec3 mid = vec3(0.13, 0.19, 0.15);
+    vec3 floorColor = vec3(0.09, 0.13, 0.10);
     vec3 base = mix(top, mid, smoothstep(0.0, 0.62, y));
     base = mix(base, floorColor, smoothstep(0.62, 1.0, y) * 0.6);
-    float spot = exp(-length((uv - vec2(0.25, 0.55)) * vec2(1.1, 1.4)) * 2.4);
-    base += vec3(0.10) * spot;
+    float spot = exp(-length((uv - vec2(0.235, 0.52)) * vec2(1.35, 1.65)) * 3.2);
+    float beamWidth = mix(0.035, 0.19, smoothstep(0.08, 0.86, y));
+    float beam = (1.0 - smoothstep(beamWidth * 0.55, beamWidth,
+                                  abs(uv.x - 0.235))) *
+                 smoothstep(0.08, 0.16, y) * (1.0 - smoothstep(0.76, 0.90, y));
+    float lamp = (1.0 - smoothstep(0.004, 0.012, abs(y - 0.075))) *
+                 (1.0 - smoothstep(0.025, 0.045, abs(uv.x - 0.235)));
+    base += vec3(0.19, 0.23, 0.17) * spot;
+    base += vec3(0.11, 0.15, 0.10) * beam;
+    base += vec3(0.40, 0.48, 0.34) * lamp;
 
     // Xbox-style green swooshes sweeping from the left edge to the lower right.
     float x = uv.x;
@@ -343,8 +350,8 @@ void main() {
     float w1 = 0.07 * (1.0 - x * 0.75);
     float w2 = 0.035 * (1.0 - x * 0.6);
     float w3 = 0.02 + 0.015 * x;
-    vec3 green = vec3(0.30, 0.78, 0.10);
-    vec3 lime = vec3(0.62, 0.95, 0.38);
+    vec3 green = vec3(0.21, 0.87, 0.41);
+    vec3 lime = vec3(0.54, 0.98, 0.60);
     float r1 = ribbon(y, c1, w1, 0.015);
     float r2 = ribbon(y, c2, w2, 0.012);
     float r3 = ribbon(y, c3, w3, 0.010);
@@ -391,11 +398,14 @@ varying vec2 uv;
 void main() {
     vec4 texel = texture2D(modelTexture, uv);
     vec3 n = normalize(surfaceNormal);
-    vec3 light = normalize(vec3(-0.45, 0.72, -0.55));
+    vec3 light = normalize(vec3(-0.28, 0.88, 0.62));
+    vec3 view = vec3(0.0, 0.0, 1.0);
     float diffuse = max(dot(n, light), 0.0);
-    float rim = pow(1.0 - max(dot(n, vec3(0.0, 0.0, 1.0)), 0.0), 2.2);
-    vec3 color = texel.rgb * (0.50 + diffuse * 0.72);
-    color += vec3(0.06, 0.19, 0.10) * rim * 0.28;
+    float specular = pow(max(dot(n, normalize(light + view)), 0.0), 24.0);
+    float rim = pow(1.0 - max(dot(n, view), 0.0), 2.2);
+    vec3 color = texel.rgb * (0.56 + diffuse * 0.78);
+    color += vec3(0.38, 0.42, 0.30) * specular * 0.24;
+    color += vec3(0.08, 0.22, 0.11) * rim * 0.30;
     gl_FragColor = vec4(color, texel.a * alpha);
 })";
     static const char* textVertex = R"(precision highp float;
