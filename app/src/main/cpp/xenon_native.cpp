@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
 #include <ctime>
 #include <exception>
 #include <string>
@@ -62,12 +63,30 @@ struct PendingSearch {
 
 PendingSearch pendingSearch;
 
+struct StoreDownloadProgress {
+    std::string gameId;
+    uint64_t downloaded = 0;
+    uint64_t total = 0;
+    int state = 0;
+};
+
+struct PendingStoreDownloadProgress {
+    std::mutex mutex;
+    std::vector<StoreDownloadProgress> updates;
+};
+PendingStoreDownloadProgress pendingStoreDownloadProgress;
+
 bool takePendingSearch(std::string& query) {
     std::lock_guard<std::mutex> lock(pendingSearch.mutex);
     if (!pendingSearch.ready) return false;
     query = std::move(pendingSearch.query);
     pendingSearch.ready = false;
     return true;
+}
+
+void takePendingStoreDownloadUpdates(std::vector<StoreDownloadProgress>& updates) {
+    std::lock_guard<std::mutex> lock(pendingStoreDownloadProgress.mutex);
+    updates.swap(pendingStoreDownloadProgress.updates);
 }
 
 enum class Screen : int { Home, Store, Library, Settings, About, ProfileSelect };
@@ -301,6 +320,7 @@ struct GameEntry {
     std::string title;
     std::string description;
     std::string link;
+    std::string sha256;
     std::string cover;
     std::vector<std::string> screenshots;
     std::string createdAt;
@@ -322,6 +342,13 @@ bool parseGamesResponse(const std::string& text, std::vector<GameEntry>& out) {
         if (const auto* v = item.find("title")) entry.title = v->asString();
         if (const auto* v = item.find("description")) entry.description = v->asString();
         if (const auto* v = item.find("link")) entry.link = v->asString();
+        if (const auto* v = item.find("sha256")) entry.sha256 = v->asString();
+        if (entry.sha256.empty()) {
+            if (const auto* v = item.find("sha_256")) entry.sha256 = v->asString();
+        }
+        if (entry.sha256.empty()) {
+            if (const auto* v = item.find("sha256_hash")) entry.sha256 = v->asString();
+        }
         if (const auto* v = item.find("cover")) entry.cover = v->asString();
         if (const auto* v = item.find("created_at")) entry.createdAt = v->asString();
         if (const auto* v = item.find("screenshots"); v && v->type == JsonValue::Type::Array) {
@@ -1398,6 +1425,7 @@ struct AppState {
     int detailScreenshotIndex = 0;
     std::chrono::steady_clock::time_point detailOpenedAt;
     bool detailAnimationStarted = false;
+    std::unordered_map<std::string, StoreDownloadProgress> storeDownloads;
 
     void initializeRenderer() {
         logoTexture = 0;
@@ -1572,20 +1600,25 @@ struct AppState {
         detailAnimationStarted = false;
     }
 
-    void downloadStoreGame(const std::string& url, const std::string& title) {
+    void downloadStoreGame(const std::string& url, const std::string& title,
+                           const std::string& sha256, const std::string& gameId) {
         if (url.empty() || !activity || !activity->vm || !activity->clazz) return;
         JNIEnv* env = nullptr;
         bool attached = false;
         if (!attachJniEnv(activity, env, attached)) return;
         jclass activityClass = env->GetObjectClass(activity->clazz);
         jmethodID downloadMethod = activityClass
-            ? env->GetMethodID(activityClass, "downloadStoreGame", "(Ljava/lang/String;Ljava/lang/String;)V") : nullptr;
+            ? env->GetMethodID(activityClass, "downloadStoreGame", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V") : nullptr;
         if (downloadMethod) {
             jstring jurl = env->NewStringUTF(url.c_str());
             jstring jtitle = env->NewStringUTF(title.c_str());
-            env->CallVoidMethod(activity->clazz, downloadMethod, jurl, jtitle);
+            jstring jhash = env->NewStringUTF(sha256.c_str());
+            jstring jgameId = env->NewStringUTF(gameId.c_str());
+            env->CallVoidMethod(activity->clazz, downloadMethod, jurl, jtitle, jhash, jgameId);
             env->DeleteLocalRef(jurl);
             env->DeleteLocalRef(jtitle);
+            env->DeleteLocalRef(jhash);
+            env->DeleteLocalRef(jgameId);
         }
         if (activityClass) env->DeleteLocalRef(activityClass);
         if (attached) activity->vm->DetachCurrentThread();
@@ -2110,11 +2143,35 @@ struct AppState {
 
         const float openW = 200.f;
         const float openY = coverY + coverH - 44.f;
-        renderer.roundedRect(textX, openY, openW, 44.f, kGreen, 22.f);
-        const char* openText = "BAIXAR JOGO";
-        const float openScale = 1.9f;
+        const auto download = storeDownloads.find(game.id);
+        const bool hasDownload = download != storeDownloads.end();
+        const StoreDownloadProgress* progress = hasDownload ? &download->second : nullptr;
+        const char* openText = !progress ? "BAIXAR JOGO"
+            : (progress->state == 1 ? "CONTINUAR" : (progress->state == 2 ? "TENTAR NOVAMENTE" : "BAIXANDO"));
+        renderer.roundedRect(textX, openY, openW, 44.f, hasDownload ? kPanel2 : kGreen, 22.f);
+        if (progress && progress->total > 0 && progress->state == 0) {
+            const float fraction = std::min(1.f, static_cast<float>(progress->downloaded)
+                    / static_cast<float>(progress->total));
+            renderer.roundedRect(textX, openY, openW * fraction, 44.f, kGreen, 22.f);
+        }
+        const float openScale = progress && progress->state == 2 ? 1.5f : 1.9f;
         smoothText(openText, textX + (openW - smoothTextWidth(openText, openScale)) * .5f,
-                   openY + 15.f, openScale, kBg);
+               openY + 15.f, openScale, hasDownload ? kText : kBg);
+        if (progress) {
+            char progressText[128];
+            if (progress->total > 0) {
+                const double percent = std::min(100.0, progress->downloaded * 100.0 / progress->total);
+                std::snprintf(progressText, sizeof(progressText), "%.2f%%  %.2f / %.2f MB",
+                              percent,
+                              progress->downloaded / (1024.0 * 1024.0),
+                              progress->total / (1024.0 * 1024.0));
+            } else {
+                std::snprintf(progressText, sizeof(progressText), "%.2f MB baixados",
+                              progress->downloaded / (1024.0 * 1024.0));
+            }
+            smoothText(progressText, textX, openY - 22.f, 2.0f,
+                       progress->state == 2 ? kMuted : kText);
+        }
 
         // Carrossel de capturas de tela.
         const float shotsY = coverY + coverH + 28.f;
@@ -2164,6 +2221,29 @@ struct AppState {
         smoothText("Sua colecao de jogos", x0, y0 + 30.f, 3.2f, kMuted);
         float cardY = y0 + 46.f;
         renderer.roundedRect(x0, cardY, contentW, h - cardY - 24.f, kPanel);
+        std::vector<std::string> downloadedIsos;
+        const std::string gamesPath = profileStoragePath + "/games";
+        if (DIR* directory = opendir(gamesPath.c_str())) {
+            while (dirent* entry = readdir(directory)) {
+                const std::string name = entry->d_name;
+                if (name.size() >= 4) {
+                    std::string extension = name.substr(name.size() - 4);
+                    std::transform(extension.begin(), extension.end(), extension.begin(),
+                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                    if (extension == ".iso") downloadedIsos.push_back(name);
+                }
+            }
+            closedir(directory);
+        }
+        if (!downloadedIsos.empty()) {
+            smoothText("ISOS BAIXADOS", x0 + 32.f, cardY + 28.f, 3.2f, kMuted);
+            const size_t visible = std::min<size_t>(downloadedIsos.size(), 8);
+            for (size_t i = 0; i < visible; ++i) {
+                smoothText(downloadedIsos[i].c_str(), x0 + 32.f, cardY + 60.f + static_cast<float>(i) * 28.f,
+                           3.2f, kText);
+            }
+            return;
+        }
         renderer.roundedRect(x0 + 32.f, cardY + 46.f, 82.f, 82.f, kBg);
         renderer.roundedRect(x0 + 55.f, cardY + 69.f, 36.f, 36.f, kGreen);
         smoothText("X", x0 + 67.f, cardY + 80.f, 4.0f, kBg);
@@ -2403,7 +2483,7 @@ struct AppState {
             const float openY = coverY + coverH - 44.f;
             if (x >= textX && x < textX + openW && y >= openY && y < openY + 44.f) {
                 GameEntry game;
-                if (catalog.findById(selectedGameId, game)) downloadStoreGame(game.link, game.title);
+                if (catalog.findById(selectedGameId, game)) downloadStoreGame(game.link, game.title, game.sha256, game.id);
                 return;
             }
 
@@ -2581,7 +2661,7 @@ struct AppState {
                 case AKEYCODE_BUTTON_A:
                 case AKEYCODE_BUTTON_START: {
                     GameEntry game;
-                    if (catalog.findById(selectedGameId, game)) downloadStoreGame(game.link, game.title);
+                    if (catalog.findById(selectedGameId, game)) downloadStoreGame(game.link, game.title, game.sha256, game.id);
                     break;
                 }
                 default:
@@ -2854,6 +2934,22 @@ Java_com_xboxemulator_XenonActivity_nativeOnStoreSearch(
     pendingSearch.ready = true;
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_xboxemulator_XenonActivity_nativeOnStoreDownloadProgress(
+    JNIEnv* env, jclass, jstring gameId, jlong downloaded, jlong total, jint state) {
+    if (!gameId) return;
+    const char* utfGameId = env->GetStringUTFChars(gameId, nullptr);
+    if (!utfGameId) return;
+    StoreDownloadProgress update;
+    update.gameId = utfGameId;
+    update.downloaded = downloaded > 0 ? static_cast<uint64_t>(downloaded) : 0;
+    update.total = total > 0 ? static_cast<uint64_t>(total) : 0;
+    update.state = state;
+    env->ReleaseStringUTFChars(gameId, utfGameId);
+    std::lock_guard<std::mutex> lock(pendingStoreDownloadProgress.mutex);
+    pendingStoreDownloadProgress.updates.push_back(std::move(update));
+}
+
 void android_main(android_app* app) {
     AppState state;
     app->userData = &state;
@@ -2887,6 +2983,12 @@ void android_main(android_app* app) {
         std::string submittedQuery;
         if (takePendingSearch(submittedQuery)) {
             state.handleSearchSubmitted(submittedQuery);
+        }
+        std::vector<StoreDownloadProgress> downloadUpdates;
+        takePendingStoreDownloadUpdates(downloadUpdates);
+        for (auto& update : downloadUpdates) {
+            if (update.state == 3) state.storeDownloads.erase(update.gameId);
+            else state.storeDownloads[update.gameId] = std::move(update);
         }
         if (state.initialized) state.draw();
     }

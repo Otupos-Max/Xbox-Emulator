@@ -3,6 +3,7 @@ package com.xboxemulator;
 import android.app.Dialog;
 import android.app.NativeActivity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -32,14 +33,13 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.function.BooleanSupplier;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -56,6 +56,11 @@ public class XenonActivity extends NativeActivity {
     private TextView profileError;
     private EditText nameInput;
     private Dialog searchDialog;
+    private static final int REQUEST_DOWNLOAD_NOTIFICATIONS = 51;
+    private String pendingDownloadUrl;
+    private String pendingDownloadTitle;
+    private String pendingDownloadHash;
+    private String pendingDownloadGameId;
 
     static {
         // NativeActivity abre a biblioteca com dlopen, o que não registra os
@@ -66,6 +71,7 @@ public class XenonActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        startService(new Intent(this, XenonDownloadService.class).setAction(XenonDownloadService.ACTION_RESTORE));
         Window window = getWindow();
         window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN
                 | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -437,6 +443,7 @@ public class XenonActivity extends NativeActivity {
     /** Envia o termo de busca da Xenon Store para o lado nativo (sem retorno: a
      *  busca roda em segundo plano e o resultado chega via polling). */
     private native void nativeOnStoreSearch(String query);
+    static native void nativeOnStoreDownloadProgress(String gameId, long downloaded, long total, int state);
 
     /**
      * Abre um dialogo simples de busca para a Xenon Store, pre-preenchido com
@@ -607,165 +614,194 @@ public class XenonActivity extends NativeActivity {
         }
     }
 
-    /** Baixa o arquivo escolhido pela Xenon Store e coloca ISOs em /games. */
-    public void downloadStoreGame(String url, String title) {
+    /** Enfileira o arquivo escolhido pela Xenon Store para download em segundo plano. */
+    public void downloadStoreGame(String url, String title, String sha256, String gameId) {
         if (url == null || url.trim().isEmpty()) {
             showStoreToast("Link de download indisponível");
             return;
         }
-        final String gameTitle = title == null ? "jogo" : title;
-        showStoreToast("Baixando " + gameTitle + "...");
-        ExecutorService executor = Executors.newSingleThreadExecutor();
-        executor.execute(() -> {
-            try {
-                downloadAndPrepareGame(url, gameTitle);
-            } catch (Exception error) {
-                Log.e(TAG, "Falha ao baixar o jogo", error);
-                showStoreToast("Falha no download: " + error.getMessage());
-            } finally {
-                executor.shutdown();
+        pendingDownloadUrl = url;
+        pendingDownloadTitle = title == null ? "jogo" : title;
+        pendingDownloadHash = sha256;
+        pendingDownloadGameId = gameId == null ? "" : gameId;
+        runOnUiThread(() -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},
+                        REQUEST_DOWNLOAD_NOTIFICATIONS);
+            } else {
+                startPendingDownload();
             }
         });
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_DOWNLOAD_NOTIFICATIONS) startPendingDownload();
+    }
+
+    private void startPendingDownload() {
+        if (pendingDownloadUrl == null) return;
+        Intent intent = new Intent(this, XenonDownloadService.class)
+                .setAction(XenonDownloadService.ACTION_START)
+                .putExtra(XenonDownloadService.EXTRA_URL, pendingDownloadUrl)
+                .putExtra(XenonDownloadService.EXTRA_TITLE, pendingDownloadTitle)
+                .putExtra(XenonDownloadService.EXTRA_SHA256, pendingDownloadHash)
+                .putExtra(XenonDownloadService.EXTRA_GAME_ID, pendingDownloadGameId);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent);
+        else startService(intent);
+        showStoreToast("Download iniciado: " + pendingDownloadTitle);
+        pendingDownloadUrl = null;
+        pendingDownloadTitle = null;
+        pendingDownloadHash = null;
+        pendingDownloadGameId = null;
     }
 
     private void showStoreToast(String message) {
         runOnUiThread(() -> android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show());
     }
 
-    private void downloadAndPrepareGame(String sourceUrl, String title) throws Exception {
-        File gamesDir = getExternalFilesDir("games");
-        if (gamesDir == null) gamesDir = new File(getFilesDir(), "games");
-        if (!gamesDir.exists() && !gamesDir.mkdirs()) throw new IOException("Não foi possível criar a pasta games");
-
-        HttpURLConnection connection = (HttpURLConnection) new URL(sourceUrl).openConnection();
-        connection.setInstanceFollowRedirects(true);
-        connection.setConnectTimeout(15000);
-        connection.setReadTimeout(60000);
-        connection.setRequestProperty("Accept", "*/*");
-        connection.setRequestProperty("User-Agent", "Xenon-Emulator/1.0");
-        connection.connect();
-        int status = connection.getResponseCode();
-        if (status < 200 || status >= 300) throw new IOException("Servidor respondeu HTTP " + status);
-
-        String contentType = connection.getHeaderField("Content-Type");
-        String disposition = connection.getHeaderField("Content-Disposition");
-        String suggestedName = suggestedFileName(disposition, connection.getURL().toString(), title);
-        String lowerName = suggestedName.toLowerCase(Locale.ROOT);
-
-        File downloaded = new File(gamesDir, suggestedName);
-        try (InputStream input = connection.getInputStream();
-             BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(downloaded))) {
-            byte[] buffer = new byte[1024 * 256];
-            int read;
-            while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
-        } finally {
-            connection.disconnect();
-        }
-
-        boolean archive = lowerName.endsWith(".zip") || lowerName.endsWith(".gz")
-                || lowerName.endsWith(".tgz") || lowerName.endsWith(".tar.gz")
-                || (contentType != null && (contentType.contains("zip") || contentType.contains("gzip")));
-
-        if (!archive) {
+    static int prepareDownloadedGame(File partial, File gamesDir, String fileName, String contentType,
+                                     BooleanSupplier cancelled) throws IOException {
+        checkCancelled(cancelled);
+        String lowerName = fileName.toLowerCase(Locale.ROOT);
+        boolean zip = lowerName.endsWith(".zip") || (contentType != null && contentType.contains("zip"));
+        boolean tarGzip = lowerName.endsWith(".tar.gz") || lowerName.endsWith(".tgz");
+        boolean gzip = lowerName.endsWith(".gz") || (contentType != null && contentType.contains("gzip"));
+        if (!zip && !tarGzip && !gzip) {
             if (!lowerName.endsWith(".iso")) {
                 throw new IOException("O servidor não forneceu um arquivo ISO suportado");
             }
-            showStoreToast("Download concluído: " + downloaded.getName());
-            return;
+            if (partial.length() == 0) throw new IOException("O arquivo baixado está vazio");
+            checkCancelled(cancelled);
+            Files.move(partial.toPath(), new File(gamesDir, sanitizeFileName(fileName)).toPath(),
+                    StandardCopyOption.REPLACE_EXISTING);
+            return 1;
         }
 
-        int extracted = 0;
-        if (lowerName.endsWith(".zip")) {
-            extracted = extractZip(downloaded, gamesDir);
-        } else if (lowerName.endsWith(".tar.gz") || lowerName.endsWith(".tgz")) {
-            extracted = extractTarGzip(downloaded, gamesDir);
-        } else {
-            extracted = extractGzipIso(downloaded, gamesDir);
-        }
-        Files.deleteIfExists(downloaded.toPath());
+        int extracted = zip ? extractZip(partial, gamesDir, cancelled)
+            : (tarGzip ? extractTarGzip(partial, gamesDir, cancelled)
+            : extractGzipIso(partial, gamesDir, fileName, cancelled));
         if (extracted == 0) throw new IOException("Nenhum arquivo ISO encontrado no compacto");
-        showStoreToast("Download concluído: " + extracted + " ISO pronto(s)");
+        Files.deleteIfExists(partial.toPath());
+        return extracted;
     }
 
-    private String suggestedFileName(String disposition, String url, String title) {
+    static String suggestedFileName(String disposition, String url, String title) {
         if (disposition != null) {
             int nameIndex = disposition.toLowerCase(Locale.ROOT).indexOf("filename=");
             if (nameIndex >= 0) {
                 String name = disposition.substring(nameIndex + 9).trim().replace("\"", "");
                 if (name.contains(";")) name = name.substring(0, name.indexOf(';')).trim();
-                if (!name.isEmpty()) return name;
+                if (!name.isEmpty()) return sanitizeFileName(name);
             }
         }
         String path = Uri.parse(url).getPath();
         if (path != null) {
             String name = path.substring(path.lastIndexOf('/') + 1);
-            if (!name.isEmpty()) return name;
+            if (!name.isEmpty()) return sanitizeFileName(name);
         }
         return sanitizeFileName(title) + ".iso";
     }
 
-    private String sanitizeFileName(String name) {
+    static String sanitizeFileName(String name) {
         String result = name.replaceAll("[^\\p{L}\\p{N}._ -]", "_").replaceAll("\\s+", "_").trim();
         return result.isEmpty() ? "jogo" : result;
     }
 
-    private int extractZip(File archive, File gamesDir) throws IOException {
-        int extracted = 0;
-        try (ZipInputStream input = new ZipInputStream(new FileInputStream(archive))) {
-            ZipEntry entry;
-            while ((entry = input.getNextEntry()) != null) {
-                if (entry.isDirectory()) continue;
-                String name = new File(entry.getName()).getName();
-                if (name.toLowerCase(Locale.ROOT).endsWith(".iso")) {
-                    File target = new File(gamesDir, sanitizeFileName(name));
-                    try (BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(target))) {
-                        copyStream(input, output);
-                    }
-                    extracted++;
-                }
-                input.closeEntry();
-            }
-        }
-        return extracted;
-    }
-
-    private int extractTarGzip(File archive, File gamesDir) throws IOException {
-        int extracted = 0;
-        try (GZIPInputStream input = new GZIPInputStream(new FileInputStream(archive))) {
-            byte[] header = new byte[512];
-            while (readFully(input, header) == header.length) {
-                boolean empty = true;
-                for (byte value : header) {
-                    if (value != 0) { empty = false; break; }
-                }
-                if (empty) break;
-
-                String entryName = new String(header, 0, 100, StandardCharsets.UTF_8).split("\\0", 2)[0];
-                long size = parseTarSize(header, 124, 12);
-                if (entryName.toLowerCase(Locale.ROOT).endsWith(".iso") && size > 0) {
-                    String name = new File(entryName).getName();
-                    File target = new File(gamesDir, sanitizeFileName(name));
-                    try (BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(target))) {
-                        long remaining = size;
-                        byte[] buffer = new byte[1024 * 256];
-                        while (remaining > 0) {
-                            int count = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
-                            if (count < 0) throw new IOException("TAR truncado");
-                            output.write(buffer, 0, count);
-                            remaining -= count;
+    private static int extractZip(File archive, File gamesDir, BooleanSupplier cancelled) throws IOException {
+        List<File> staged = new ArrayList<>();
+        List<File> targets = new ArrayList<>();
+        try {
+            try (ZipInputStream input = new ZipInputStream(new FileInputStream(archive))) {
+                ZipEntry entry;
+                while ((entry = input.getNextEntry()) != null) {
+                    checkCancelled(cancelled);
+                    if (entry.isDirectory()) continue;
+                    String name = new File(entry.getName()).getName();
+                    if (name.toLowerCase(Locale.ROOT).endsWith(".iso")) {
+                        File target = new File(gamesDir, sanitizeFileName(name));
+                        File partial = Files.createTempFile(gamesDir.toPath(), "xenon-iso-", ".part").toFile();
+                        staged.add(partial);
+                        targets.add(target);
+                        try (BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(partial))) {
+                            long copied = copyStream(input, output, cancelled);
+                            if (copied == 0 || (entry.getSize() >= 0 && copied != entry.getSize())) {
+                                throw new IOException("ISO extraído incompleto");
+                            }
                         }
                     }
-                    extracted++;
-                } else {
-                    skipFully(input, size);
+                    input.closeEntry();
                 }
-                skipFully(input, (512 - (size % 512)) % 512);
             }
+            checkCancelled(cancelled);
+            for (int i = 0; i < staged.size(); i++) {
+                Files.move(staged.get(i).toPath(), targets.get(i).toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+            return staged.size();
+        } finally {
+            for (File partial : staged) Files.deleteIfExists(partial.toPath());
         }
-        return extracted;
     }
 
-    private long parseTarSize(byte[] header, int offset, int length) throws IOException {
+    private static int extractTarGzip(File archive, File gamesDir, BooleanSupplier cancelled) throws IOException {
+        List<File> staged = new ArrayList<>();
+        List<File> targets = new ArrayList<>();
+        try {
+            try (GZIPInputStream input = new GZIPInputStream(new FileInputStream(archive))) {
+                byte[] header = new byte[512];
+                while (true) {
+                    checkCancelled(cancelled);
+                    int headerSize = readFully(input, header);
+                    if (headerSize == 0) break;
+                    if (headerSize != header.length) throw new IOException("Cabeçalho TAR truncado");
+                    boolean empty = true;
+                    for (byte value : header) {
+                        if (value != 0) { empty = false; break; }
+                    }
+                    if (empty) break;
+
+                    String entryName = new String(header, 0, 100, StandardCharsets.UTF_8).split("\\0", 2)[0];
+                    long size = parseTarSize(header, 124, 12);
+                    if (entryName.toLowerCase(Locale.ROOT).endsWith(".iso") && size > 0) {
+                        String name = new File(entryName).getName();
+                        File target = new File(gamesDir, sanitizeFileName(name));
+                        File partial = Files.createTempFile(gamesDir.toPath(), "xenon-iso-", ".part").toFile();
+                        staged.add(partial);
+                        targets.add(target);
+                        try (BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(partial))) {
+                            long remaining = size;
+                            long copied = 0;
+                            byte[] buffer = new byte[1024 * 256];
+                            while (remaining > 0) {
+                                checkCancelled(cancelled);
+                                int count = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+                                if (count < 0) throw new IOException("TAR truncado");
+                                output.write(buffer, 0, count);
+                                copied += count;
+                                remaining -= count;
+                            }
+                            if (copied != size) throw new IOException("ISO extraído incompleto");
+                        }
+                    } else {
+                        skipFully(input, size, cancelled);
+                    }
+                    skipFully(input, (512 - (size % 512)) % 512, cancelled);
+                }
+            }
+            checkCancelled(cancelled);
+            for (int i = 0; i < staged.size(); i++) {
+                Files.move(staged.get(i).toPath(), targets.get(i).toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+            return staged.size();
+        } finally {
+            for (File partial : staged) Files.deleteIfExists(partial.toPath());
+        }
+    }
+
+    private static long parseTarSize(byte[] header, int offset, int length) throws IOException {
         String value = new String(header, offset, length, StandardCharsets.US_ASCII).trim().replace("\0", "");
         if (value.isEmpty()) return 0;
         try {
@@ -775,7 +811,7 @@ public class XenonActivity extends NativeActivity {
         }
     }
 
-    private int readFully(InputStream input, byte[] buffer) throws IOException {
+    private static int readFully(InputStream input, byte[] buffer) throws IOException {
         int offset = 0;
         while (offset < buffer.length) {
             int read = input.read(buffer, offset, buffer.length - offset);
@@ -785,34 +821,55 @@ public class XenonActivity extends NativeActivity {
         return offset;
     }
 
-    private void skipFully(InputStream input, long count) throws IOException {
+    private static void skipFully(InputStream input, long count, BooleanSupplier cancelled) throws IOException {
         byte[] buffer = new byte[1024 * 16];
         long remaining = count;
         while (remaining > 0) {
+            checkCancelled(cancelled);
             int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
             if (read < 0) throw new IOException("Arquivo compactado truncado");
             remaining -= read;
         }
     }
 
-    private int extractGzipIso(File archive, File gamesDir) throws IOException {
-        String targetName = archive.getName();
+    private static int extractGzipIso(File archive, File gamesDir, String archiveName,
+                                      BooleanSupplier cancelled) throws IOException {
+        String targetName = archiveName;
         targetName = targetName.replaceAll("(?i)\\.(gz|tgz|tar\\.gz)$", "");
         if (!targetName.toLowerCase(Locale.ROOT).endsWith(".iso")) {
             throw new IOException("O compacto não aponta diretamente para um ISO");
         }
         File target = new File(gamesDir, sanitizeFileName(targetName));
-        try (GZIPInputStream input = new GZIPInputStream(new FileInputStream(archive));
-             BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(target))) {
-            copyStream(input, output);
+        File partial = Files.createTempFile(gamesDir.toPath(), "xenon-iso-", ".part").toFile();
+        try {
+            try (GZIPInputStream input = new GZIPInputStream(new FileInputStream(archive));
+                 BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(partial))) {
+                copyStream(input, output, cancelled);
+            }
+            if (partial.length() == 0) throw new IOException("ISO extraído vazio");
+            checkCancelled(cancelled);
+            Files.move(partial.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(partial.toPath());
         }
         return 1;
     }
 
-    private void copyStream(InputStream input, java.io.OutputStream output) throws IOException {
+    private static long copyStream(InputStream input, java.io.OutputStream output,
+                                   BooleanSupplier cancelled) throws IOException {
         byte[] buffer = new byte[1024 * 256];
         int read;
-        while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+        long copied = 0;
+        while ((read = input.read(buffer)) != -1) {
+            checkCancelled(cancelled);
+            output.write(buffer, 0, read);
+            copied += read;
+        }
+        return copied;
+    }
+
+    private static void checkCancelled(BooleanSupplier cancelled) throws IOException {
+        if (cancelled.getAsBoolean()) throw new IOException("Download cancelado");
     }
 
     /**
