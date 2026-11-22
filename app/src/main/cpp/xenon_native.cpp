@@ -369,6 +369,7 @@ struct Renderer {
     GLint texRectLocation = -1;
     GLint texAlphaLocation = -1;
     GLint texSamplerLocation = -1;
+    GLint texRadiusLocation = -1;
     GLint boxResolution = -1;
     GLint boxRectLocation = -1;
     GLint boxColorLocation = -1;
@@ -496,9 +497,18 @@ void main() {
 varying vec2 vUV;
 uniform sampler2D image;
 uniform float alpha;
+uniform vec4 rect;
+uniform float radius;
 void main() {
     vec4 sampled = texture2D(image, vUV);
-    gl_FragColor = vec4(sampled.rgb, sampled.a * alpha);
+    // Cantos arredondados opcionais (radius = 0 mantem o retangulo reto).
+    vec2 halfSize = rect.zw * 0.5;
+    vec2 p = (vUV - 0.5) * rect.zw;
+    float r = min(radius, min(halfSize.x, halfSize.y));
+    vec2 q = abs(p) - halfSize + r;
+    float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+    float mask = radius > 0.0 ? 1.0 - smoothstep(-1.0, 1.0, d) : 1.0;
+    gl_FragColor = vec4(sampled.rgb, sampled.a * alpha * mask);
 })";
         GLuint texVs = compile(GL_VERTEX_SHADER, texVertex);
         GLuint texFs = compile(GL_FRAGMENT_SHADER, texFragment);
@@ -518,6 +528,7 @@ void main() {
                 texRectLocation = glGetUniformLocation(texProgram, "rect");
                 texAlphaLocation = glGetUniformLocation(texProgram, "alpha");
                 texSamplerLocation = glGetUniformLocation(texProgram, "image");
+                texRadiusLocation = glGetUniformLocation(texProgram, "radius");
             }
         }
         if (texVs != 0) glDeleteShader(texVs);
@@ -703,12 +714,14 @@ void main() {
     }
 
     // Desenha uma textura (usada apenas para o logo carregado de logo/logo.png).
-    void texturedRect(float x, float y, float w, float h, GLuint texture, float alpha = 1.f) {
+    void texturedRect(float x, float y, float w, float h, GLuint texture, float alpha = 1.f,
+                      float radius = 0.f) {
         if (texProgram == 0 || texture == 0) return;
         glUseProgram(texProgram);
         glUniform2f(texResolution, static_cast<float>(width), static_cast<float>(height));
         glUniform4f(texRectLocation, x, y, w, h);
         glUniform1f(texAlphaLocation, alpha);
+        glUniform1f(texRadiusLocation, radius);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, texture);
         glUniform1i(texSamplerLocation, 0);
@@ -1378,6 +1391,9 @@ struct AppState {
     std::unordered_map<std::string, bool> coverRequested;
     std::string storeSearchQuery;
     bool showGameDetail = false;
+    // Foco do controle na Xenon Store: -1 = menu lateral, 0 = barra de busca,
+    // 1..N = card do jogo (indice + 1).
+    int storeFocus = -1;
     std::string selectedGameId;
     int detailScreenshotIndex = 0;
 
@@ -1878,6 +1894,9 @@ struct AppState {
         smoothText(subtitle, L.x0, L.y0 + 66.f, 2.6f, kMuted);
 
         // Barra de busca (toque abre o dialogo nativo de busca do Android).
+        if (storeFocus == 0) {
+            renderer.roundedRect(L.x0 - 3.f, L.searchBarY - 3.f, L.contentW + 6.f, L.searchBarH + 6.f, kGreen, 31.f);
+        }
         renderer.roundedRect(L.x0, L.searchBarY, L.contentW, L.searchBarH, kPanel, 28.f);
         renderer.rect(L.x0 + 28.f, L.searchBarY + L.searchBarH - 2.f, L.contentW - 56.f, 2.f, Color{kGreen.r, kGreen.g, kGreen.b, .35f});
         renderer.roundedRect(L.x0 + 22.f, L.searchBarY + L.searchBarH * .5f - 9.f, 18.f, 18.f, kGreen, 9.f);
@@ -1947,6 +1966,10 @@ struct AppState {
             const float coverH = L.cardH - 64.f;
             const float pad = 8.f;
 
+            // Card focado pelo controle ganha um contorno verde.
+            if (storeFocus == i + 1) {
+                renderer.roundedRect(cardX - 4.f, cardY - 4.f, L.cardW + 8.f, L.cardH + 8.f, kGreen, 22.f);
+            }
             // Sombra suave + card com borda fina destacando a capa.
             renderer.roundedRect(cardX + 3.f, cardY + 6.f, L.cardW, L.cardH, Color{0.f, 0.f, 0.f, .35f}, 18.f);
             renderer.roundedRect(cardX, cardY, L.cardW, L.cardH, kPanel2, 18.f);
@@ -1957,7 +1980,7 @@ struct AppState {
             const float imgH = coverH - pad;
             const GLuint cover = coverTexture(game.cover);
             if (cover != 0) {
-                renderer.texturedRect(imgX, imgY, imgW, imgH, cover);
+                renderer.texturedRect(imgX, imgY, imgW, imgH, cover, 1.f, 12.f);
             } else {
                 const Color coverColor{accent.r * .18f, accent.g * .18f, accent.b * .18f, 1.f};
                 renderer.roundedRect(imgX, imgY, imgW, imgH, coverColor, 12.f);
@@ -1976,6 +1999,10 @@ struct AppState {
             if (title != game.title) title += "...";
             smoothText(title.c_str(), cardX + 12.f, cardY + coverH + 20.f, 2.2f, kText);
         }
+
+        if (storeFocus > visibleCount) storeFocus = visibleCount;
+        const char* padHint = "CONTROLE:  A ABRIR   B VOLTAR   Y BUSCAR";
+        smoothText(padHint, L.x0 + L.contentW - smoothTextWidth(padHint, 1.8f), L.y0 + 70.f, 1.8f, kMuted);
 
         if (static_cast<int>(games.size()) > visibleCount) {
             char more[64];
@@ -2017,7 +2044,7 @@ struct AppState {
         const float coverY = panelY + 28.f;
         const GLuint cover = coverTexture(game.cover);
         if (cover != 0) {
-            renderer.texturedRect(coverX, coverY, coverW, coverH, cover);
+            renderer.texturedRect(coverX, coverY, coverW, coverH, cover, 1.f, 14.f);
         } else {
             renderer.roundedRect(coverX, coverY, coverW, coverH, kPanel2, 14.f);
             const std::string initial = game.title.empty() ? "?" : game.title.substr(0, 1);
@@ -2432,7 +2459,74 @@ struct AppState {
         }
     }
 
+    // Controles genericos (USB, Bluetooth ou receptor sem fio "pendrive")
+    // as vezes mandam BUTTON_1..16 em vez de A/B/X/Y: traduz pros nomes padrao.
+    static int normalizeControllerKey(int keyCode) {
+        switch (keyCode) {
+            case AKEYCODE_BUTTON_1: return AKEYCODE_BUTTON_A;
+            case AKEYCODE_BUTTON_2: return AKEYCODE_BUTTON_B;
+            case AKEYCODE_BUTTON_3: return AKEYCODE_BUTTON_X;
+            case AKEYCODE_BUTTON_4: return AKEYCODE_BUTTON_Y;
+            case AKEYCODE_BUTTON_9: return AKEYCODE_BUTTON_SELECT;
+            case AKEYCODE_BUTTON_10: return AKEYCODE_BUTTON_START;
+            case AKEYCODE_BUTTON_C: return AKEYCODE_BUTTON_Y;
+            case AKEYCODE_BUTTON_Z: return AKEYCODE_BUTTON_X;
+            case AKEYCODE_NUMPAD_ENTER:
+            case AKEYCODE_SPACE: return AKEYCODE_BUTTON_A;
+            default: return keyCode;
+        }
+    }
+
+    // Navegacao da Xenon Store pelo controle (grade de cards + busca).
+    void handleStoreKey(int keyCode) {
+        const StoreLayout L = computeStoreLayout();
+        const bool loading = catalog.loading.load();
+        const bool hasError = catalog.hasError.load();
+        const int count = loading ? 0 : std::min(static_cast<int>(catalog.snapshot().size()), L.maxVisible);
+        if (storeFocus > count) storeFocus = count;
+        const int idx = storeFocus - 1;
+        switch (keyCode) {
+            case AKEYCODE_DPAD_LEFT:
+                if (storeFocus <= 0 || idx % L.columns == 0) storeFocus = -1;
+                else --storeFocus;
+                break;
+            case AKEYCODE_DPAD_RIGHT:
+                if (storeFocus >= 1 && idx + 1 < count) ++storeFocus;
+                break;
+            case AKEYCODE_DPAD_UP:
+                if (storeFocus >= 1) storeFocus = idx < L.columns ? 0 : storeFocus - L.columns;
+                break;
+            case AKEYCODE_DPAD_DOWN:
+                if (storeFocus == 0) { if (count > 0) storeFocus = 1; }
+                else if (idx + L.columns < count) storeFocus += L.columns;
+                break;
+            case AKEYCODE_DPAD_CENTER:
+            case AKEYCODE_ENTER:
+            case AKEYCODE_BUTTON_A:
+            case AKEYCODE_BUTTON_START:
+                if (hasError && !loading) { catalog.fetchGames(activity, storeSearchQuery); break; }
+                if (storeFocus == 0) requestSearchDialog();
+                else if (storeFocus >= 1) {
+                    std::vector<GameEntry> games = catalog.snapshot();
+                    if (idx < static_cast<int>(games.size())) openGameDetail(games[idx].id);
+                }
+                break;
+            case AKEYCODE_BUTTON_Y:
+                requestSearchDialog();
+                break;
+            case AKEYCODE_BACK:
+            case AKEYCODE_ESCAPE:
+            case AKEYCODE_BUTTON_B:
+            case AKEYCODE_BUTTON_SELECT:
+                storeFocus = -1;
+                break;
+            default:
+                break;
+        }
+    }
+
     void handleKey(int keyCode) {
+        keyCode = normalizeControllerKey(keyCode);
         if (showGameDetail) {
             switch (keyCode) {
                 case AKEYCODE_BACK:
@@ -2464,7 +2558,15 @@ struct AppState {
             applyProfileAction(profileSelection.handleKey(keyCode));
             return;
         }
+        if (screen == Screen::Store && storeFocus >= 0) {
+            handleStoreKey(keyCode);
+            return;
+        }
         switch (keyCode) {
+            case AKEYCODE_DPAD_RIGHT:
+                // Do menu lateral entra na loja (vai para o primeiro jogo).
+                if (screen == Screen::Store) storeFocus = catalog.snapshot().empty() ? 0 : 1;
+                break;
             case AKEYCODE_DPAD_UP:
                 focusedNavigation = (focusedNavigation + 4) % 5;
                 break;
@@ -2476,6 +2578,7 @@ struct AppState {
             case AKEYCODE_BUTTON_A:
             case AKEYCODE_BUTTON_START:
                 screen = static_cast<Screen>(focusedNavigation);
+                if (screen == Screen::Store) storeFocus = catalog.snapshot().empty() ? 0 : 1;
                 break;
             case AKEYCODE_BUTTON_X:
                 profileSelection.setSelectedProfile(profileSelection.activeProfile());
@@ -2564,6 +2667,31 @@ struct AppState {
         const float hatX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_X, 0);
         if (screen == Screen::ProfileSelect) {
             applyProfileAction(profileSelection.handleJoystick(leftX, rightX, hatX));
+            return;
+        }
+
+        // Na loja (e nos detalhes do jogo) o analogico/direcional anda nas
+        // duas direcoes, convertido em teclas do direcional.
+        if (showGameDetail || (screen == Screen::Store)) {
+            const float lY = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Y, 0);
+            const float hY = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_Y, 0);
+            const float horiz = std::abs(hatX) > .5f ? hatX : leftX;
+            const float vert = std::abs(hY) > .5f ? hY : lY;
+            int key = 0;
+            int dir = 0;
+            if (std::abs(horiz) >= std::abs(vert)) {
+                if (horiz < -.55f) { key = AKEYCODE_DPAD_LEFT; dir = 3; }
+                else if (horiz > .55f) { key = AKEYCODE_DPAD_RIGHT; dir = 4; }
+            } else {
+                if (vert < -.55f) { key = AKEYCODE_DPAD_UP; dir = 1; }
+                else if (vert > .55f) { key = AKEYCODE_DPAD_DOWN; dir = 2; }
+            }
+            if (dir == 0) { controllerDirection = 0; return; }
+            const auto now = std::chrono::steady_clock::now();
+            if (dir == controllerDirection && now < controllerRepeatAt) return;
+            controllerDirection = dir;
+            controllerRepeatAt = now + std::chrono::milliseconds(260);
+            handleKey(key);
             return;
         }
 
