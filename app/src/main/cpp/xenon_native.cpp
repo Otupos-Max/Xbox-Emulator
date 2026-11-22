@@ -1396,6 +1396,8 @@ struct AppState {
     int storeFocus = -1;
     std::string selectedGameId;
     int detailScreenshotIndex = 0;
+    std::chrono::steady_clock::time_point detailOpenedAt;
+    bool detailAnimationStarted = false;
 
     void initializeRenderer() {
         logoTexture = 0;
@@ -1560,25 +1562,30 @@ struct AppState {
         selectedGameId = id;
         showGameDetail = true;
         detailScreenshotIndex = 0;
+        detailOpenedAt = std::chrono::steady_clock::now();
+        detailAnimationStarted = true;
     }
 
     void closeGameDetail() {
         showGameDetail = false;
         selectedGameId.clear();
+        detailAnimationStarted = false;
     }
 
-    void openExternalLink(const std::string& url) {
+    void downloadStoreGame(const std::string& url, const std::string& title) {
         if (url.empty() || !activity || !activity->vm || !activity->clazz) return;
         JNIEnv* env = nullptr;
         bool attached = false;
         if (!attachJniEnv(activity, env, attached)) return;
         jclass activityClass = env->GetObjectClass(activity->clazz);
-        jmethodID openMethod = activityClass
-            ? env->GetMethodID(activityClass, "openExternalLink", "(Ljava/lang/String;)V") : nullptr;
-        if (openMethod) {
+        jmethodID downloadMethod = activityClass
+            ? env->GetMethodID(activityClass, "downloadStoreGame", "(Ljava/lang/String;Ljava/lang/String;)V") : nullptr;
+        if (downloadMethod) {
             jstring jurl = env->NewStringUTF(url.c_str());
-            env->CallVoidMethod(activity->clazz, openMethod, jurl);
+            jstring jtitle = env->NewStringUTF(title.c_str());
+            env->CallVoidMethod(activity->clazz, downloadMethod, jurl, jtitle);
             env->DeleteLocalRef(jurl);
+            env->DeleteLocalRef(jtitle);
         }
         if (activityClass) env->DeleteLocalRef(activityClass);
         if (attached) activity->vm->DetachCurrentThread();
@@ -2031,7 +2038,7 @@ struct AppState {
     }
 
     // Modal de detalhes do jogo selecionado na Xenon Store: capa, titulo,
-    // descricao, botao para abrir o link externo e o carrossel de capturas.
+    // descricao, botao de download e o carrossel de capturas.
     void drawGameDetailOverlay() {
         const float w = static_cast<float>(renderer.width);
         const float h = static_cast<float>(renderer.height);
@@ -2041,10 +2048,21 @@ struct AppState {
             return;
         }
 
-        renderer.rect(0, 0, w, h, Color{0.f, 0.f, 0.f, .68f});
+        float openProgress = 1.f;
+        if (detailAnimationStarted) {
+            const float elapsed = std::chrono::duration<float>(
+                std::chrono::steady_clock::now() - detailOpenedAt).count();
+            openProgress = std::min(1.f, elapsed / .24f);
+            openProgress = 1.f - std::pow(1.f - openProgress, 3.f);
+        }
+        const float overlayAlpha = .68f * openProgress;
+        renderer.rect(0, 0, w, h, Color{0.f, 0.f, 0.f, overlayAlpha});
 
-        const float panelW = std::min(960.f, w - 80.f);
-        const float panelH = std::min(600.f, h - 64.f);
+        const float basePanelW = std::min(960.f, w - 80.f);
+        const float basePanelH = std::min(600.f, h - 64.f);
+        const float panelScale = .88f + .12f * openProgress;
+        const float panelW = basePanelW * panelScale;
+        const float panelH = basePanelH * panelScale;
         const float panelX = (w - panelW) * .5f;
         const float panelY = (h - panelH) * .5f;
         renderer.roundedRect(panelX, panelY, panelW, panelH, kPanel, 20.f);
@@ -2093,7 +2111,7 @@ struct AppState {
         const float openW = 200.f;
         const float openY = coverY + coverH - 44.f;
         renderer.roundedRect(textX, openY, openW, 44.f, kGreen, 22.f);
-        const char* openText = "ABRIR NO NAVEGADOR";
+        const char* openText = "BAIXAR JOGO";
         const float openScale = 1.9f;
         smoothText(openText, textX + (openW - smoothTextWidth(openText, openScale)) * .5f,
                    openY + 15.f, openScale, kBg);
@@ -2385,7 +2403,7 @@ struct AppState {
             const float openY = coverY + coverH - 44.f;
             if (x >= textX && x < textX + openW && y >= openY && y < openY + 44.f) {
                 GameEntry game;
-                if (catalog.findById(selectedGameId, game)) openExternalLink(game.link);
+                if (catalog.findById(selectedGameId, game)) downloadStoreGame(game.link, game.title);
                 return;
             }
 
@@ -2563,7 +2581,7 @@ struct AppState {
                 case AKEYCODE_BUTTON_A:
                 case AKEYCODE_BUTTON_START: {
                     GameEntry game;
-                    if (catalog.findById(selectedGameId, game)) openExternalLink(game.link);
+                    if (catalog.findById(selectedGameId, game)) downloadStoreGame(game.link, game.title);
                     break;
                 }
                 default:
