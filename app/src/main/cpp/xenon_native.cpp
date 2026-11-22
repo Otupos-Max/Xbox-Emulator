@@ -62,10 +62,17 @@ constexpr Color kText{0.933f, 0.961f, 0.945f, 1};
 constexpr Color kMuted{0.541f, 0.616f, 0.588f, 1};
 constexpr Color kGreen{0.212f, 0.871f, 0.408f, 1};
 constexpr Color kBlue{0.404f, 0.682f, 0.961f, 1};
+constexpr Color kRed{0.871f, 0.212f, 0.212f, 1};
+constexpr Color kCardA{0.12f, 0.18f, 0.09f, 1.f};
+constexpr Color kCardB{0.09f, 0.12f, 0.20f, 1.f};
+constexpr Color kCardC{0.08f, 0.15f, 0.09f, 1.f};
+constexpr Color kCardD{0.07f, 0.10f, 0.18f, 1.f};
+constexpr Color kCardE{0.14f, 0.12f, 0.07f, 1.f};
 
 // Geometria fixa da barra superior e da barra lateral de navegacao.
 constexpr float kSidebarW = 220.f;
 constexpr float kTopBarH = 64.f;
+constexpr float kBottomBarH = 46.f;
 constexpr float kNavItemH = 60.f;
 constexpr float kNavTopPad = 14.f;
 
@@ -907,24 +914,25 @@ struct AppState {
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
 
+        // Barra superior
         renderer.rect(0, 0, w, kTopBarH, kPanel);
         renderer.rect(0, kTopBarH - 1.f, w, 1.f, kPanel2);
 
         const float logoBoxH = 34.f;
         if (logoTexture != 0) {
             const float logoW = std::clamp(logoBoxH * logoAspect, 20.f, 160.f);
-            renderer.texturedRect(24.f, (kTopBarH - logoBoxH) * .5f, logoW, logoBoxH, logoTexture);
-            smoothText("XENON", 24.f + logoW + 14.f, (kTopBarH - 18.f) * .5f, 4.6f, kText);
+            renderer.texturedRect(14.f, (kTopBarH - logoBoxH) * .5f, logoW, logoBoxH, logoTexture);
+            smoothText("XENON", 14.f + logoW + 10.f, (kTopBarH - 16.f) * .5f, 4.f, kText);
         } else {
-            renderer.roundedRect(24.f, (kTopBarH - 36.f) * .5f, 36.f, 36.f, kGreen);
-            renderer.rotatedRect(24.f + 18.f, kTopBarH * .5f, 22.f, 4.f, .785398f, kBg);
-            renderer.rotatedRect(24.f + 18.f, kTopBarH * .5f, 22.f, 4.f, -.785398f, kBg);
-            smoothText("XENON", 24.f + 50.f, (kTopBarH - 18.f) * .5f, 4.6f, kText);
+            renderer.roundedRect(14.f, (kTopBarH - 36.f) * .5f, 36.f, 36.f, kGreen);
+            renderer.rotatedRect(14.f + 18.f, kTopBarH * .5f, 22.f, 4.f, .785398f, kBg);
+            renderer.rotatedRect(14.f + 18.f, kTopBarH * .5f, 22.f, 4.f, -.785398f, kBg);
+            smoothText("XENON", 14.f + 46.f, (kTopBarH - 16.f) * .5f, 4.f, kText);
         }
 
         // Relogio, barras de sinal e wi-fi no canto superior direito.
         const float statusY = kTopBarH * .5f;
-        float cursorX = w - 26.f;
+        float cursorX = w - 18.f;
         const time_t now = std::time(nullptr);
         char clockBuffer[8] = {};
         struct tm localTime {};
@@ -938,32 +946,130 @@ struct AppState {
         cursorX -= clockWidth;
         smoothText(clockBuffer, cursorX, statusY - 9.f, 3.6f, kText);
 
-        cursorX -= 34.f;
+        // Separador vertical
+        cursorX -= 20.f;
+        renderer.rect(cursorX, statusY - 11.f, 1.f, 22.f, kPanel2);
+        cursorX -= 10.f;
+
+        // Barras de sinal celular
         for (int bar = 0; bar < 4; ++bar) {
-            const float barH = 6.f + bar * 4.f;
-            renderer.rect(cursorX + bar * 7.f, statusY + 9.f - barH, 5.f, barH, kGreen);
+            const float barH = 5.f + bar * 3.5f;
+            renderer.rect(cursorX - 28.f + bar * 7.f, statusY + 8.f - barH, 5.f, barH, kGreen);
         }
+        cursorX -= 44.f;
 
-        cursorX -= 40.f;
-        renderer.roundedRect(cursorX, statusY - 8.f, 18.f, 14.f, kGreen);
-        renderer.roundedRect(cursorX + 4.f, statusY - 4.f, 10.f, 7.f, kBg);
+        // Icone wi-fi (arco + ponto)
+        renderer.roundedRect(cursorX - 16.f, statusY - 8.f, 16.f, 12.f, kGreen);
+        renderer.roundedRect(cursorX - 12.f, statusY - 4.f, 8.f, 7.f, kBg);
+        renderer.rect(cursorX - 9.f, statusY + 3.f, 2.f, 3.f, kGreen);
 
-        // Barra lateral.
-        renderer.rect(0, kTopBarH, kSidebarW, h - kTopBarH, kPanel);
-        renderer.rect(kSidebarW - 1.f, kTopBarH, 1.f, h - kTopBarH, kPanel2);
+        // Barra lateral
+        renderer.rect(0, kTopBarH, kSidebarW, h - kTopBarH - kBottomBarH, kPanel);
+        renderer.rect(kSidebarW - 1.f, kTopBarH, 1.f, h - kTopBarH - kBottomBarH, kPanel2);
 
         static const char* labels[] = {"INICIO", "XENON STORE", "MEUS JOGOS", "CONFIGURACOES", "SOBRE"};
         for (int i = 0; i < 5; ++i) {
             const float itemY = kTopBarH + kNavTopPad + i * kNavItemH;
+            const float itemH = kNavItemH - 4.f;
             const bool active = static_cast<int>(screen) == i;
             const bool focused = focusedNavigation == i;
-            if (active || focused) {
-                renderer.rect(0, itemY, 4.f, kNavItemH - 10.f, kGreen);
-                renderer.rect(4.f, itemY, kSidebarW - 4.f, kNavItemH - 10.f,
-                             active ? kPanel2 : Color{kPanel2.r, kPanel2.g, kPanel2.b, .6f});
+
+            // Fundo do item de navegacao
+            if (active) {
+                renderer.rect(6.f, itemY + 1.f, kSidebarW - 12.f, itemH - 2.f, kGreen);
+            } else if (focused) {
+                renderer.rect(6.f, itemY + 1.f, kSidebarW - 12.f, itemH - 2.f, kPanel2);
+                renderer.rect(6.f, itemY + 1.f, 3.f, itemH - 2.f, kGreen);
             }
-            smoothText(labels[i], 26.f, itemY + (kNavItemH - 10.f) * .5f - 9.f, 2.8f,
-                       active ? kGreen : (focused ? kText : kMuted));
+
+            // Icone de cada item (simples, vetorial)
+            const float icx = 32.f;
+            const float icy = itemY + itemH * .5f;
+            const Color ic = active ? kBg : kGreen;
+            const float u = 3.5f;
+            switch (i) {
+                case 0: // Casa
+                    renderer.rect(icx - 3*u, icy + u*.5f, 6*u, 3.5f*u, ic);
+                    renderer.rect(icx - 3.5f*u, icy - u, 7*u, u*1.5f, ic);
+                    renderer.rect(icx - 2*u, icy - 3.5f*u, 4*u, 2.5f*u, ic);
+                    break;
+                case 1: // Sacola
+                    renderer.rect(icx - 3*u, icy - u*.5f, 6*u, 4.5f*u, ic);
+                    renderer.rect(icx - 2*u, icy - 3*u, 4*u, 2.8f*u, ic);
+                    break;
+                case 2: // Controle
+                    renderer.rect(icx - 4*u, icy - 1.5f*u, 8*u, 3*u, ic);
+                    renderer.rect(icx - 5.2f*u, icy - u, 2.f, 2*u, ic);
+                    renderer.rect(icx + 3.2f*u, icy - u, 2.f, 2*u, ic);
+                    break;
+                case 3: // Engrenagem
+                    renderer.rect(icx - 2.5f*u, icy - 2.5f*u, 5*u, 5*u, ic);
+                    renderer.rect(icx - u, icy - 3.8f*u, 2*u, 1.4f*u, ic);
+                    renderer.rect(icx - u, icy + 2.5f*u, 2*u, 1.4f*u, ic);
+                    renderer.rect(icx - 3.8f*u, icy - u, 1.4f*u, 2*u, ic);
+                    renderer.rect(icx + 2.5f*u, icy - u, 1.4f*u, 2*u, ic);
+                    break;
+                case 4: // Info (i)
+                    renderer.rect(icx - u, icy - 3.5f*u, 2*u, 2*u, ic);
+                    renderer.rect(icx - u, icy - u, 2*u, 4.5f*u, ic);
+                    break;
+            }
+
+            smoothText(labels[i], 58.f, itemY + (itemH - 10.f) * .5f - 7.f, 2.6f,
+                       active ? kBg : (focused ? kText : kMuted));
+        }
+    }
+
+    // Barra de hints de controle na parte inferior da tela
+    void drawBottomBar() {
+        float w = static_cast<float>(renderer.width);
+        float h = static_cast<float>(renderer.height);
+        const float barY = h - kBottomBarH;
+        renderer.rect(0, barY, w, kBottomBarH, kPanel);
+        renderer.rect(0, barY, w, 1.f, kPanel2);
+
+        const float cy = barY + kBottomBarH * .5f;
+        const float btnSz = 22.f;
+
+        // Botao A (verde) + label
+        float px = 24.f;
+        renderer.roundedRect(px, cy - btnSz * .5f, btnSz, btnSz, kGreen);
+        smoothText("A", px + 7.f, cy - 7.f, 2.6f, kBg);
+        px += btnSz + 8.f;
+        smoothText("SELECIONAR", px, cy - 7.f, 2.5f, kText);
+        px += smoothTextWidth("SELECIONAR", 2.5f) + 22.f;
+
+        // Botao B (vermelho) + label
+        renderer.roundedRect(px, cy - btnSz * .5f, btnSz, btnSz, kRed);
+        smoothText("B", px + 7.f, cy - 7.f, 2.6f, kBg);
+        px += btnSz + 8.f;
+        smoothText("VOLTAR", px, cy - 7.f, 2.5f, kText);
+
+        // Lado direito: Menu e Opcoes
+        float rx = w - 24.f;
+
+        // Label Opcoes
+        const char* opcoesLabel = "OPCOES";
+        const float opW = smoothTextWidth(opcoesLabel, 2.5f);
+        rx -= opW;
+        smoothText(opcoesLabel, rx, cy - 7.f, 2.5f, kText);
+        rx -= 26.f;
+        // Icone grade 2x2
+        renderer.rect(rx - 18.f, cy - 8.f, 7.f, 7.f, kMuted);
+        renderer.rect(rx - 9.f,  cy - 8.f, 7.f, 7.f, kMuted);
+        renderer.rect(rx - 18.f, cy + 1.f, 7.f, 7.f, kMuted);
+        renderer.rect(rx - 9.f,  cy + 1.f, 7.f, 7.f, kMuted);
+        rx -= 34.f;
+
+        // Label Menu
+        const char* menuLabel = "MENU";
+        const float menuW = smoothTextWidth(menuLabel, 2.5f);
+        rx -= menuW;
+        smoothText(menuLabel, rx, cy - 7.f, 2.5f, kText);
+        rx -= 28.f;
+        // Icone 3 linhas
+        for (int ln = 0; ln < 3; ++ln) {
+            renderer.rect(rx - 18.f, cy - 9.f + ln * 7.f, 18.f, 4.f, kMuted);
         }
     }
 
@@ -972,92 +1078,160 @@ struct AppState {
         float h = static_cast<float>(renderer.height);
         const float x0 = kSidebarW;
         const float y0 = kTopBarH;
-        const float margin = 28.f;
+        const float margin = 24.f;
         const float contentW = w - x0;
 
-        // Painel do perfil ativo, no canto superior direito.
+        // --- Painel do perfil ativo (canto superior direito) ---
         const float profileW = 240.f;
         const float profileX = w - margin - profileW;
         const float profileY = y0 + margin;
-        renderer.roundedRect(profileX, profileY, profileW, 66.f, kPanel);
-        renderer.roundedRect(profileX + 14.f, profileY + 12.f, 42.f, 42.f, kGreen);
-        smoothText("X", profileX + 28.f, profileY + 23.f, 3.4f, kBg);
-        const char* activeName = profileSelection.activeProfileName();
-        smoothText(activeName, profileX + 68.f, profileY + 14.f, 3.f, kText);
-        smoothText("JOGOS INSTALADOS: 0", profileX + 68.f, profileY + 38.f, 2.0f, kMuted);
+        const float profileH = 118.f;
+        renderer.roundedRect(profileX, profileY, profileW, profileH, kPanel);
+        // Linha verde no topo do painel
+        renderer.rect(profileX, profileY, profileW, 2.f, kGreen);
 
-        // Banner de boas-vindas.
+        // Icone circular com X do perfil
+        renderer.roundedRect(profileX + 12.f, profileY + 12.f, 46.f, 46.f, kGreen);
+        renderer.rotatedRect(profileX + 35.f, profileY + 35.f, 26.f, 5.f, .785398f, kBg);
+        renderer.rotatedRect(profileX + 35.f, profileY + 35.f, 26.f, 5.f, -.785398f, kBg);
+
+        const char* activeName = profileSelection.activeProfileName();
+        smoothText(activeName, profileX + 68.f, profileY + 14.f, 3.0f, kText);
+
+        // Separador horizontal
+        renderer.rect(profileX + 68.f, profileY + 44.f, profileW - 80.f, 1.f, kPanel2);
+
+        // Linha: controle + jogos instalados
+        renderer.rect(profileX + 70.f, profileY + 54.f, 16.f, 10.f, kMuted);
+        renderer.rect(profileX + 65.f, profileY + 57.f, 6.f, 5.f, kMuted);
+        renderer.rect(profileX + 86.f, profileY + 57.f, 5.f, 5.f, kMuted);
+        smoothText("JOGOS INSTALADOS", profileX + 100.f, profileY + 53.f, 2.0f, kMuted);
+        smoothText("0", w - margin - 18.f, profileY + 53.f, 2.3f, kText);
+
+        // Linha: espaco livre
+        renderer.rect(profileX + 70.f, profileY + 76.f, 10.f, 12.f, kMuted);
+        renderer.rect(profileX + 66.f, profileY + 86.f, 18.f, 3.f, kMuted);
+        smoothText("ESPACO LIVRE", profileX + 100.f, profileY + 76.f, 2.0f, kMuted);
+        smoothText("223 GB", w - margin - 68.f, profileY + 76.f, 2.3f, kText);
+
+        // --- Banner de boas-vindas ---
         const float heroY = y0 + margin;
-        const float heroH = 258.f;
+        const float heroH = 230.f;
         const float heroW = contentW - margin * 2.f - profileW - 18.f;
         renderer.roundedRect(x0 + margin, heroY, heroW, heroH, kPanel);
-        renderer.rect(x0 + margin, heroY, 6.f, heroH, kGreen);
+        // Barra verde esquerda
+        renderer.rect(x0 + margin, heroY, 5.f, heroH, kGreen);
 
-        const float markSize = 110.f;
-        const float markX = x0 + margin + 30.f;
+        // Linhas diagonais decorativas no fundo do hero
+        for (int s = 0; s < 10; ++s) {
+            renderer.rotatedRect(x0 + margin + 60.f + s * 24.f, heroY + heroH * .5f,
+                                 2.5f, heroH * 1.5f, .5236f,
+                                 Color{kGreen.r, kGreen.g, kGreen.b, 0.05f});
+        }
+
+        // Marca/logo no hero
+        const float markSize = 108.f;
+        const float markX = x0 + margin + 22.f;
         const float markY = heroY + (heroH - markSize) * .5f;
         if (logoTexture != 0) {
-            float logoW = markSize;
-            float logoH = markSize / std::max(logoAspect, 0.01f);
-            if (logoH > markSize) {
-                logoH = markSize;
-                logoW = markSize * logoAspect;
-            }
-            renderer.texturedRect(markX + (markSize - logoW) * .5f,
-                                  markY + (markSize - logoH) * .5f, logoW, logoH, logoTexture);
+            float lw = markSize;
+            float lh = markSize / std::max(logoAspect, 0.01f);
+            if (lh > markSize) { lh = markSize; lw = markSize * logoAspect; }
+            renderer.texturedRect(markX + (markSize - lw) * .5f,
+                                  markY + (markSize - lh) * .5f, lw, lh, logoTexture);
         } else {
-            renderer.roundedRect(markX, markY, markSize, markSize, Color{.09f, .14f, .12f, 1.f});
+            renderer.roundedRect(markX, markY, markSize, markSize, Color{.09f, .16f, .13f, 1.f});
+            renderer.roundedRect(markX + 8.f, markY + 8.f, markSize - 16.f, markSize - 16.f,
+                                 Color{.12f, .22f, .17f, 1.f});
             renderer.rotatedRect(markX + markSize * .5f, markY + markSize * .5f,
-                                 markSize * .62f, 11.f, .785398f, kGreen);
+                                 markSize * .60f, 10.f, .785398f, kGreen);
             renderer.rotatedRect(markX + markSize * .5f, markY + markSize * .5f,
-                                 markSize * .62f, 11.f, -.785398f, kGreen);
+                                 markSize * .60f, 10.f, -.785398f, kGreen);
+            renderer.rotatedRect(markX + markSize * .5f, markY + markSize * .5f,
+                                 14.f, 14.f, .785398f, kText);
         }
 
-        const float textX = markX + markSize + 34.f;
-        smoothText("BEM-VINDO AO", textX, heroY + 44.f, 3.0f, kGreen);
-        smoothText("XENON", textX, heroY + 78.f, 8.2f, kText);
+        const float textX = markX + markSize + 28.f;
+        smoothText("BEM-VINDO AO", textX, heroY + 38.f, 2.9f, kGreen);
+        smoothText("XENON", textX, heroY + 70.f, 8.0f, kText);
         smoothText("Sua nova experiencia em jogos comeca aqui.",
-                   textX, heroY + 142.f, 3.0f, kMuted);
-        const float exploreW = 176.f;
-        const float exploreY = heroY + heroH - 56.f;
-        renderer.roundedRect(textX, exploreY, exploreW, 40.f, kGreen);
-        const char* exploreText = "EXPLORAR";
-        smoothText(exploreText, textX + (exploreW - smoothTextWidth(exploreText, 2.8f)) * .5f,
-                   exploreY + 13.f, 2.8f, kBg);
+                   textX, heroY + 132.f, 2.8f, kMuted);
+
+        // Botao Explorar com borda verde
+        const float exploreW = 170.f;
+        const float exploreY = heroY + heroH - 54.f;
+        renderer.rect(textX, exploreY, exploreW, 1.f, kGreen);
+        renderer.rect(textX, exploreY + 38.f, exploreW, 1.f, kGreen);
+        renderer.rect(textX, exploreY, 1.f, 38.f, kGreen);
+        renderer.rect(textX + exploreW - 1.f, exploreY, 1.f, 38.f, kGreen);
+        const char* exploreText = "EXPLORAR  >";
+        smoothText(exploreText,
+                   textX + (exploreW - smoothTextWidth(exploreText, 2.8f)) * .5f,
+                   exploreY + 12.f, 2.8f, kGreen);
         for (int dot = 0; dot < 3; ++dot) {
-            renderer.roundedRect(textX + exploreW + 26.f + dot * 16.f, exploreY + 16.f, 8.f, 8.f,
-                                 dot == 0 ? kGreen : kPanel2);
+            renderer.roundedRect(textX + exploreW + 18.f + dot * 14.f, exploreY + 15.f,
+                                 8.f, 8.f, dot == 0 ? kGreen : kPanel2);
         }
 
-        // Linha "Destaques": vitrine dos jogos em destaque.
-        const float destaquesY = heroY + heroH + 24.f;
-        smoothText("DESTAQUES", x0 + margin, destaquesY, 3.6f, kText);
-        const char* verTodos = "VER TODOS";
-        smoothText(verTodos, w - margin - smoothTextWidth(verTodos, 2.2f), destaquesY + 4.f,
-                   2.2f, kGreen);
+        // --- Secao Destaques ---
+        const float destaquesY = heroY + heroH + 18.f;
+        // Acento verde lateral no titulo
+        renderer.rect(x0 + margin, destaquesY, 3.f, 20.f, kGreen);
+        smoothText("DESTAQUES", x0 + margin + 8.f, destaquesY, 3.5f, kText);
+        const char* verTodos = "VER TODOS >";
+        smoothText(verTodos, w - margin - smoothTextWidth(verTodos, 2.2f),
+                   destaquesY + 4.f, 2.2f, kGreen);
 
+        // --- Cards de jogos ---
         const int cardCount = 5;
-        const float cardGap = 14.f;
-        const float cardsY = destaquesY + 28.f;
+        const float cardGap = 12.f;
+        const float cardsY = destaquesY + 30.f;
         const float cardsAreaW = contentW - margin * 2.f;
         const float cardW = (cardsAreaW - cardGap * (cardCount - 1)) / cardCount;
-        const float cardH = std::min(188.f, h - cardsY - 24.f);
+        const float cardH = std::min(h - kBottomBarH - cardsY - 14.f, 185.f);
+        const float coverH = cardH * .64f;
+
         static const char* titles[cardCount] = {"FORZA HORIZON", "SONIC GEN.", "MINECRAFT",
                                                 "PORTAL 2", "PLANTS VS ZUMBIS"};
         static const char* initials[cardCount] = {"FH", "SG", "MC", "P2", "PZ"};
+        static const Color coverTints[cardCount] = {kCardA, kCardB, kCardC, kCardD, kCardE};
+
         for (int i = 0; i < cardCount; ++i) {
             const float cardX = x0 + margin + i * (cardW + cardGap);
+
+            // Fundo do card
             renderer.roundedRect(cardX, cardsY, cardW, cardH, kPanel);
-            renderer.roundedRect(cardX, cardsY, cardW, cardH * .62f, kPanel2);
-            const float badgeSize = 44.f;
-            const float badgeX = cardX + 14.f;
-            const float badgeY = cardsY + cardH * .62f - badgeSize * .5f;
+
+            // Area da capa com tint de cor
+            renderer.roundedRect(cardX, cardsY, cardW, coverH, coverTints[i]);
+
+            // Linhas diagonais sutis na capa
+            for (int s = 0; s < 3; ++s) {
+                renderer.rotatedRect(cardX + cardW * .5f + (s - 1) * 18.f,
+                                     cardsY + coverH * .5f,
+                                     2.f, coverH * 1.3f, .4363f,
+                                     Color{kGreen.r, kGreen.g, kGreen.b, 0.06f});
+            }
+            // X decorativo translucido na capa
+            const float lx = cardX + cardW * .5f;
+            const float ly = cardsY + coverH * .45f;
+            renderer.rotatedRect(lx, ly, cardW * .38f, 7.f, .785398f,
+                                 Color{kGreen.r, kGreen.g, kGreen.b, .35f});
+            renderer.rotatedRect(lx, ly, cardW * .38f, 7.f, -.785398f,
+                                 Color{kGreen.r, kGreen.g, kGreen.b, .35f});
+
+            // Badge com iniciais do jogo
+            const float badgeSize = 42.f;
+            const float badgeX = cardX + 12.f;
+            const float badgeY = cardsY + coverH - badgeSize * .5f;
             renderer.roundedRect(badgeX, badgeY, badgeSize, badgeSize, kGreen);
-            const float initialScale = 3.1f;
-            const float initialWidth = smoothTextWidth(initials[i], initialScale);
-            smoothText(initials[i], badgeX + (badgeSize - initialWidth) * .5f,
-                       badgeY + 14.f, initialScale, kBg);
-            smoothText(titles[i], cardX + 14.f, cardsY + cardH * .62f + 18.f, 2.0f, kText);
+            const float initScale = 3.0f;
+            const float initW = smoothTextWidth(initials[i], initScale);
+            smoothText(initials[i], badgeX + (badgeSize - initW) * .5f,
+                       badgeY + 13.f, initScale, kBg);
+
+            // Titulo do jogo
+            smoothText(titles[i], cardX + 12.f, cardsY + coverH + 10.f, 2.0f, kText);
         }
     }
 
@@ -1068,7 +1242,7 @@ struct AppState {
         const float y0 = kTopBarH + 28.f;
         smoothText("XENON STORE", x0, y0, 7.f, kText);
         smoothText("Em breve: catalogo de jogos para baixar", x0, y0 + 30.f, 3.0f, kMuted);
-        renderer.roundedRect(x0, y0 + 46.f, w - kSidebarW - 56.f, h - y0 - 46.f - 24.f, kPanel);
+        renderer.roundedRect(x0, y0 + 46.f, w - kSidebarW - 56.f, h - kBottomBarH - y0 - 46.f - 16.f, kPanel);
         smoothText("Nenhuma loja conectada ainda", x0 + 24.f, y0 + 80.f, 3.2f, kMuted);
     }
 
@@ -1081,7 +1255,7 @@ struct AppState {
         smoothText("MEUS JOGOS", x0, y0, 7.f, kText);
         smoothText("Sua colecao de jogos", x0, y0 + 30.f, 3.2f, kMuted);
         float cardY = y0 + 46.f;
-        renderer.roundedRect(x0, cardY, contentW, h - cardY - 24.f, kPanel);
+        renderer.roundedRect(x0, cardY, contentW, h - kBottomBarH - cardY - 16.f, kPanel);
         renderer.roundedRect(x0 + 32.f, cardY + 46.f, 82.f, 82.f, kBg);
         renderer.roundedRect(x0 + 55.f, cardY + 69.f, 36.f, 36.f, kGreen);
         smoothText("X", x0 + 67.f, cardY + 80.f, 4.0f, kBg);
@@ -1279,7 +1453,10 @@ struct AppState {
             case Screen::About: drawAbout(); break;
             case Screen::ProfileSelect: drawProfileSelect(); break;
         }
-        if (screen != Screen::ProfileSelect) drawChrome();
+        if (screen != Screen::ProfileSelect) {
+            drawChrome();
+            drawBottomBar();
+        }
         renderer.present();
     }
 
