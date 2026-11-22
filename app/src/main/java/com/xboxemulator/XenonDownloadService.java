@@ -55,10 +55,13 @@ public final class XenonDownloadService extends Service {
     private static final String STATE_PAUSED = "paused";
     private static final String STATE_FAILED = "failed";
     private static final String TAG = "XenonDownload";
+    private static final int MAX_CONCURRENT_DOWNLOADS = 3;
+    private static final int DOWNLOAD_BUFFER_SIZE = 1024 * 1024;
+    private static final long REQUIRED_FREE_SPACE_MARGIN = 512L * 1024 * 1024;
 
     private final Object jobsLock = new Object();
     private final Map<String, Download> jobs = new HashMap<>();
-    private final ExecutorService workers = Executors.newCachedThreadPool();
+    private final ExecutorService workers = Executors.newFixedThreadPool(MAX_CONCURRENT_DOWNLOADS);
     private NotificationManager notificationManager;
     private boolean loaded;
     private int foregroundNotificationId = -1;
@@ -299,7 +302,7 @@ public final class XenonDownloadService extends Service {
         job.connection = connection;
         connection.setInstanceFollowRedirects(true);
         connection.setConnectTimeout(15000);
-        connection.setReadTimeout(60000);
+        connection.setReadTimeout(120000);
         connection.setRequestProperty("Accept", "*/*");
         connection.setRequestProperty("Accept-Encoding", "identity");
         connection.setRequestProperty("User-Agent", "Xenon-Emulator/1.0");
@@ -341,9 +344,20 @@ public final class XenonDownloadService extends Service {
             }
             job.downloaded = offset;
             persistAndNotify(job);
-            try (InputStream input = new BufferedInputStream(connection.getInputStream());
-                 BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(partial, offset > 0))) {
-                byte[] buffer = new byte[256 * 1024];
+            if (job.total > 0) {
+                long remaining = Math.max(0, job.total - offset);
+                File gamesDir = partial.getParentFile();
+                long usable = gamesDir == null ? -1 : gamesDir.getUsableSpace();
+                if (usable >= 0 && usable < remaining + REQUIRED_FREE_SPACE_MARGIN) {
+                    throw new IOException("Espaço insuficiente: necessário "
+                            + formatSize(remaining + REQUIRED_FREE_SPACE_MARGIN)
+                            + " livre");
+                }
+            }
+            try (InputStream input = new BufferedInputStream(connection.getInputStream(), DOWNLOAD_BUFFER_SIZE);
+                 BufferedOutputStream output = new BufferedOutputStream(
+                         new FileOutputStream(partial, offset > 0), DOWNLOAD_BUFFER_SIZE)) {
+                byte[] buffer = new byte[DOWNLOAD_BUFFER_SIZE];
                 int count;
                 long current = offset;
                 long lastPersist = System.currentTimeMillis();
