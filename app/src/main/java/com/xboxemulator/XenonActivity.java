@@ -4,6 +4,7 @@ import android.app.Dialog;
 import android.app.NativeActivity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -12,6 +13,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.OpenableColumns;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.util.Log;
@@ -41,6 +43,8 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.BooleanSupplier;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipEntry;
@@ -59,6 +63,8 @@ public class XenonActivity extends NativeActivity {
     private EditText nameInput;
     private Dialog searchDialog;
     private static final int REQUEST_DOWNLOAD_NOTIFICATIONS = 51;
+    private static final int REQUEST_IMPORT_GAME = 52;
+    private final ExecutorService gameImportExecutor = Executors.newSingleThreadExecutor();
     private String pendingDownloadUrl;
     private String pendingDownloadTitle;
     private String pendingDownloadHash;
@@ -91,6 +97,12 @@ public class XenonActivity extends NativeActivity {
     protected void onResume() {
         super.onResume();
         hideSystemBars();
+    }
+
+    @Override
+    protected void onDestroy() {
+        gameImportExecutor.shutdownNow();
+        super.onDestroy();
     }
 
     @Override
@@ -447,6 +459,160 @@ public class XenonActivity extends NativeActivity {
      *  busca roda em segundo plano e o resultado chega via polling). */
     private native void nativeOnStoreSearch(String query);
     static native void nativeOnStoreDownloadProgress(String gameId, long downloaded, long total, int state);
+    private static native void nativeOnOpenStore();
+
+    public void showAddGameDialog() {
+        runOnUiThread(() -> {
+            if (isFinishing()) return;
+            int padding = dp(24);
+            LinearLayout content = new LinearLayout(this);
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.setPadding(padding, dp(20), padding, dp(20));
+            content.setBackground(roundedBackground(Color.WHITE, dp(18), Color.TRANSPARENT));
+            content.setElevation(dp(14));
+
+            TextView eyebrow = new TextView(this);
+            eyebrow.setText("MEUS JOGOS  /  ADICIONAR");
+            eyebrow.setTextSize(12);
+            eyebrow.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            eyebrow.setTextColor(Color.rgb(28, 138, 72));
+            content.addView(eyebrow);
+
+            TextView title = new TextView(this);
+            title.setText("Adicionar jogo");
+            title.setTextSize(23);
+            title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            title.setTextColor(Color.rgb(24, 31, 27));
+            LinearLayout.LayoutParams titleParams = wrapParams();
+            titleParams.topMargin = dp(2);
+            content.addView(title, titleParams);
+
+            TextView subtitle = new TextView(this);
+            subtitle.setText("Escolha de onde importar o jogo.");
+            subtitle.setTextSize(14);
+            subtitle.setTextColor(Color.rgb(105, 115, 108));
+            LinearLayout.LayoutParams subtitleParams = wrapParams();
+            subtitleParams.topMargin = dp(2);
+            content.addView(subtitle, subtitleParams);
+
+            TextView storeButton = actionButton("Xenon Store", true);
+            LinearLayout.LayoutParams storeParams = new LinearLayout.LayoutParams(-1, dp(58));
+            storeParams.topMargin = dp(18);
+            content.addView(storeButton, storeParams);
+
+            TextView filesButton = actionButton("Gerenciador de arquivos", false);
+            LinearLayout.LayoutParams filesParams = new LinearLayout.LayoutParams(-1, dp(58));
+            filesParams.topMargin = dp(10);
+            content.addView(filesButton, filesParams);
+
+            Dialog dialog = new Dialog(this);
+            dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+            dialog.setContentView(content);
+            dialog.setCancelable(true);
+            storeButton.setOnClickListener(view -> {
+                dialog.dismiss();
+                try {
+                    nativeOnOpenStore();
+                } catch (LinkageError | RuntimeException error) {
+                    Log.e(TAG, "Não foi possível abrir a Xenon Store", error);
+                }
+            });
+            filesButton.setOnClickListener(view -> {
+                dialog.dismiss();
+                openGameFilePicker();
+            });
+            dialog.show();
+            Window dialogWindow = dialog.getWindow();
+            if (dialogWindow != null) {
+                dialogWindow.setBackgroundDrawableResource(android.R.color.transparent);
+                int screenWidth = getResources().getDisplayMetrics().widthPixels;
+                dialogWindow.setLayout(Math.min(dp(480), (int) (screenWidth * 0.94f)),
+                        WindowManager.LayoutParams.WRAP_CONTENT);
+                WindowManager.LayoutParams attributes = dialogWindow.getAttributes();
+                attributes.dimAmount = 0.62f;
+                dialogWindow.setAttributes(attributes);
+            }
+        });
+    }
+
+    private void openGameFilePicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
+                "application/x-iso9660-image", "application/octet-stream",
+                "application/zip", "application/x-zip-compressed",
+                "application/gzip", "application/x-gzip", "application/x-tar"
+        });
+        try {
+            startActivityForResult(intent, REQUEST_IMPORT_GAME);
+        } catch (RuntimeException error) {
+            Log.e(TAG, "Não foi possível abrir o gerenciador de arquivos", error);
+            showStoreToast("Não foi possível abrir o gerenciador de arquivos");
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_IMPORT_GAME && resultCode == RESULT_OK
+                && data != null && data.getData() != null) {
+            importSelectedGame(data.getData());
+        }
+    }
+
+    private void importSelectedGame(Uri uri) {
+        gameImportExecutor.execute(() -> {
+            File temporary = null;
+            try {
+                File gamesDir = new File(getFilesDir(), "games");
+                if (!gamesDir.exists() && !gamesDir.mkdirs()) {
+                    throw new IOException("Não foi possível criar a pasta games");
+                }
+                String fileName = selectedFileName(uri);
+                String contentType = getContentResolver().getType(uri);
+                temporary = Files.createTempFile(gamesDir.toPath(), "xenon-import-", ".part").toFile();
+                try (InputStream input = getContentResolver().openInputStream(uri);
+                     BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(temporary))) {
+                    if (input == null) throw new IOException("Não foi possível ler o arquivo selecionado");
+                    copyStream(input, output, () -> Thread.currentThread().isInterrupted());
+                }
+                int imported = prepareDownloadedGame(temporary, gamesDir, fileName, contentType,
+                        () -> Thread.currentThread().isInterrupted());
+                showStoreToast(imported == 1 ? "Jogo adicionado à biblioteca" :
+                        imported + " jogos adicionados à biblioteca");
+            } catch (Exception error) {
+                Log.e(TAG, "Falha ao importar o jogo selecionado", error);
+                showStoreToast(error.getMessage() == null
+                        ? "Não foi possível importar esse arquivo" : error.getMessage());
+            } finally {
+                if (temporary != null) {
+                    try {
+                        Files.deleteIfExists(temporary.toPath());
+                    } catch (IOException error) {
+                        Log.w(TAG, "Não foi possível remover o arquivo temporário", error);
+                    }
+                }
+            }
+        });
+    }
+
+    private String selectedFileName(Uri uri) throws IOException {
+        String fileName = null;
+        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (nameColumn >= 0) fileName = cursor.getString(nameColumn);
+            }
+        }
+        if (fileName == null || fileName.trim().isEmpty()) {
+            fileName = uri.getLastPathSegment();
+        }
+        if (fileName == null || fileName.trim().isEmpty()) {
+            throw new IOException("Não foi possível identificar o nome do arquivo");
+        }
+        return Uri.decode(fileName);
+    }
 
     /**
      * Abre um dialogo simples de busca para a Xenon Store, pre-preenchido com

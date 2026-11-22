@@ -64,6 +64,7 @@ struct PendingSearch {
 };
 
 PendingSearch pendingSearch;
+std::atomic<bool> pendingOpenStore{false};
 
 struct StoreDownloadProgress {
     std::string gameId;
@@ -2249,7 +2250,7 @@ struct AppState {
         layout.x0 = kSidebarW + 24.f;
         layout.y0 = kTopBarH + 20.f;
         layout.contentW = std::max(160.f, width - kSidebarW - 48.f);
-        layout.gridY = layout.y0 + 72.f;
+        layout.gridY = layout.y0 + (layout.contentW < 420.f ? 140.f : 86.f);
         const float availableHeight = std::max(120.f, height - layout.gridY - 34.f);
         layout.columns = std::max(1, std::min(5,
                 static_cast<int>((layout.contentW + layout.gap) / 176.f)));
@@ -2317,13 +2318,24 @@ struct AppState {
         char subtitle[96];
         std::snprintf(subtitle, sizeof(subtitle), "%zu ISO(s) no armazenamento", libraryGames.size());
         smoothText(subtitle, layout.x0, layout.y0 + 30.f, 2.6f, kMuted);
-        const float panelY = layout.y0 + 52.f;
+        const float buttonW = std::min(210.f, layout.contentW);
+        const float buttonH = 48.f;
+        const float buttonX = layout.x0 + layout.contentW - buttonW;
+        const float buttonY = layout.y0 + (layout.contentW < 420.f ? 46.f : 0.f);
+        renderer.roundedRect(buttonX, buttonY, buttonW, buttonH, kGreen, 10.f);
+        renderer.roundedRect(buttonX + 16.f, buttonY + 13.f, 22.f, 22.f, kBg, 5.f);
+        renderer.rect(buttonX + 26.f, buttonY + 17.f, 2.5f, 14.f, kGreen);
+        renderer.rect(buttonX + 20.f, buttonY + 23.f, 14.f, 2.5f, kGreen);
+        smoothText(layout.contentW < 300.f ? "ADICIONAR" : "ADICIONAR JOGO",
+               buttonX + 48.f, buttonY + 18.f,
+               layout.contentW < 300.f ? 1.8f : 2.2f, kBg);
+        const float panelY = layout.gridY - 22.f;
         renderer.roundedRect(layout.x0, panelY, layout.contentW,
                              std::max(80.f, height - panelY - 20.f), kPanel);
 
         if (libraryGames.empty()) {
-            smoothText("Nenhum ISO encontrado", layout.x0 + 24.f, panelY + 42.f, 3.4f, kText);
-            smoothText("Os downloads concluidos aparecerao aqui.", layout.x0 + 24.f,
+            smoothText("Sua biblioteca ainda esta vazia", layout.x0 + 24.f, panelY + 42.f, 3.4f, kText);
+            smoothText("Os jogos adicionados aparecerao aqui.", layout.x0 + 24.f,
                        panelY + 76.f, 2.4f, kMuted);
             return;
         }
@@ -2483,6 +2495,26 @@ struct AppState {
             std::chrono::steady_clock::now() - profileSelectionStarted).count();
         profileSelection.draw(static_cast<float>(renderer.width),
                               static_cast<float>(renderer.height), elapsed, api);
+    }
+
+    void requestAddGameDialog() {
+        if (!activity || !activity->vm || !activity->clazz) return;
+        JNIEnv* env = nullptr;
+        bool attached = false;
+        const jint status = activity->vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+        if (status == JNI_EDETACHED) {
+            if (activity->vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+            attached = true;
+        } else if (status != JNI_OK) {
+            return;
+        }
+        jclass activityClass = env->GetObjectClass(activity->clazz);
+        jmethodID showDialog = activityClass
+            ? env->GetMethodID(activityClass, "showAddGameDialog", "()V") : nullptr;
+        if (showDialog) env->CallVoidMethod(activity->clazz, showDialog);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (activityClass) env->DeleteLocalRef(activityClass);
+        if (attached) activity->vm->DetachCurrentThread();
     }
 
     void requestCreateProfileDialog() {
@@ -2679,6 +2711,14 @@ struct AppState {
         if (screen == Screen::Library) {
             refreshLibraryGames();
             const LibraryLayout layout = computeLibraryLayout();
+            const float buttonW = std::min(210.f, layout.contentW);
+            const float buttonX = layout.x0 + layout.contentW - buttonW;
+            const float buttonY = layout.y0 + (layout.contentW < 420.f ? 46.f : 0.f);
+            if (x >= buttonX && x < buttonX + buttonW &&
+                y >= buttonY && y < buttonY + 48.f) {
+                requestAddGameDialog();
+                return;
+            }
             const size_t pageStart = (librarySelection / static_cast<size_t>(layout.maxVisible))
                     * static_cast<size_t>(layout.maxVisible);
             const size_t pageEnd = std::min(libraryGames.size(), pageStart + layout.maxVisible);
@@ -3143,6 +3183,11 @@ Java_com_xboxemulator_XenonActivity_nativeOnStoreSearch(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_xboxemulator_XenonActivity_nativeOnOpenStore(JNIEnv*, jclass) {
+    pendingOpenStore.store(true);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_xboxemulator_XenonActivity_nativeOnStoreDownloadProgress(
     JNIEnv* env, jclass, jstring gameId, jlong downloaded, jlong total, jint state) {
     if (!gameId) return;
@@ -3191,6 +3236,10 @@ void android_main(android_app* app) {
         std::string submittedQuery;
         if (takePendingSearch(submittedQuery)) {
             state.handleSearchSubmitted(submittedQuery);
+        }
+        if (pendingOpenStore.exchange(false)) {
+            state.screen = Screen::Store;
+            state.focusedNavigation = static_cast<int>(Screen::Store);
         }
         std::vector<StoreDownloadProgress> downloadUpdates;
         takePendingStoreDownloadUpdates(downloadUpdates);
