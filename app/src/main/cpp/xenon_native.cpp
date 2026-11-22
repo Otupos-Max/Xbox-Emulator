@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <exception>
 #include <string>
 #include <utility>
@@ -48,30 +49,41 @@ bool takePendingProfile(std::string& name, bool& female) {
     return true;
 }
 
-enum class Screen : int { Home, Library, System, Settings, ProfileSelect };
+enum class Screen : int { Home, Store, Library, Settings, About, ProfileSelect };
 
 struct Rect { float x, y, w, h; };
 struct Color { float r, g, b, a; };
 
-// Light theme: white background to match the splash video.
-constexpr Color kBg{1.0f, 1.0f, 1.0f, 1};
-constexpr Color kPanel{0.945f, 0.953f, 0.957f, 1};
-constexpr Color kPanel2{0.882f, 0.898f, 0.910f, 1};
-constexpr Color kText{0.067f, 0.075f, 0.086f, 1};
-constexpr Color kMuted{0.420f, 0.451f, 0.490f, 1};
-constexpr Color kGreen{0.180f, 0.620f, 0.360f, 1};
+// Dark theme with neon-green accents, to match the Xenon dashboard look.
+constexpr Color kBg{0.035f, 0.047f, 0.043f, 1};
+constexpr Color kPanel{0.071f, 0.090f, 0.082f, 1};
+constexpr Color kPanel2{0.118f, 0.145f, 0.133f, 1};
+constexpr Color kText{0.933f, 0.961f, 0.945f, 1};
+constexpr Color kMuted{0.541f, 0.616f, 0.588f, 1};
+constexpr Color kGreen{0.212f, 0.871f, 0.408f, 1};
 constexpr Color kBlue{0.404f, 0.682f, 0.961f, 1};
+
+// Geometria fixa da barra superior e da barra lateral de navegacao.
+constexpr float kSidebarW = 220.f;
+constexpr float kTopBarH = 64.f;
+constexpr float kNavItemH = 60.f;
+constexpr float kNavTopPad = 14.f;
 
 struct Renderer {
     EGLDisplay display = EGL_NO_DISPLAY;
     EGLSurface surface = EGL_NO_SURFACE;
     EGLContext context = EGL_NO_CONTEXT;
     GLuint program = 0;
+    GLuint texProgram = 0;
     GLuint vertexBuffer = 0;
     size_t vertexBufferCapacity = 8;
     GLint resolution = -1;
     GLint rectLocation = -1;
     GLint colorLocation = -1;
+    GLint texResolution = -1;
+    GLint texRectLocation = -1;
+    GLint texAlphaLocation = -1;
+    GLint texSamplerLocation = -1;
     int width = 0;
     int height = 0;
     int surfaceWidth = 0;
@@ -178,6 +190,50 @@ void main() { gl_FragColor = color; })";
         glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 8, nullptr, GL_STREAM_DRAW);
         vertexBufferCapacity = 8;
 
+        // Segundo programa, usado só para desenhar o logo (textura PNG) como
+        // um quad. Opcional: se falhar, o app continua com o simbolo vetorial.
+        const char* texVertex = R"(precision highp float;
+attribute vec2 position;
+uniform vec2 resolution;
+uniform vec4 rect;
+varying vec2 vUV;
+void main() {
+    vUV = position;
+    vec2 pixel = rect.xy + position * rect.zw;
+    vec2 normalized = pixel / resolution * 2.0 - 1.0;
+    gl_Position = vec4(normalized.x, -normalized.y, 0.0, 1.0);
+})";
+        const char* texFragment = R"(precision mediump float;
+varying vec2 vUV;
+uniform sampler2D image;
+uniform float alpha;
+void main() {
+    vec4 sampled = texture2D(image, vUV);
+    gl_FragColor = vec4(sampled.rgb, sampled.a * alpha);
+})";
+        GLuint texVs = compile(GL_VERTEX_SHADER, texVertex);
+        GLuint texFs = compile(GL_FRAGMENT_SHADER, texFragment);
+        if (texVs != 0 && texFs != 0) {
+            texProgram = glCreateProgram();
+            glAttachShader(texProgram, texVs);
+            glAttachShader(texProgram, texFs);
+            glBindAttribLocation(texProgram, 0, "position");
+            glLinkProgram(texProgram);
+            GLint texLinked = GL_FALSE;
+            glGetProgramiv(texProgram, GL_LINK_STATUS, &texLinked);
+            if (texLinked != GL_TRUE) {
+                glDeleteProgram(texProgram);
+                texProgram = 0;
+            } else {
+                texResolution = glGetUniformLocation(texProgram, "resolution");
+                texRectLocation = glGetUniformLocation(texProgram, "rect");
+                texAlphaLocation = glGetUniformLocation(texProgram, "alpha");
+                texSamplerLocation = glGetUniformLocation(texProgram, "image");
+            }
+        }
+        if (texVs != 0) glDeleteShader(texVs);
+        if (texFs != 0) glDeleteShader(texFs);
+
         glViewport(0, 0, surfaceWidth, surfaceHeight);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -190,6 +246,7 @@ void main() { gl_FragColor = color; })";
                 eglMakeCurrent(display, surface, surface, context) == EGL_TRUE) {
                 if (vertexBuffer != 0) glDeleteBuffers(1, &vertexBuffer);
                 if (program != 0) glDeleteProgram(program);
+                if (texProgram != 0) glDeleteProgram(texProgram);
             }
             eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             if (context != EGL_NO_CONTEXT) eglDestroyContext(display, context);
@@ -200,6 +257,7 @@ void main() { gl_FragColor = color; })";
         surface = EGL_NO_SURFACE;
         context = EGL_NO_CONTEXT;
         program = 0;
+        texProgram = 0;
         vertexBuffer = 0;
         vertexBufferCapacity = 8;
     }
@@ -269,6 +327,26 @@ void main() { gl_FragColor = color; })";
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
         glEnableVertexAttribArray(0);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+
+    // Desenha uma textura (usada apenas para o logo carregado de logo/logo.png).
+    void texturedRect(float x, float y, float w, float h, GLuint texture, float alpha = 1.f) {
+        if (texProgram == 0 || texture == 0) return;
+        glUseProgram(texProgram);
+        glUniform2f(texResolution, static_cast<float>(width), static_cast<float>(height));
+        glUniform4f(texRectLocation, x, y, w, h);
+        glUniform1f(texAlphaLocation, alpha);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glUniform1i(texSamplerLocation, 0);
+
+        static const float vertices[] = {0,0, 1,0, 0,1, 1,1};
+        glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glEnableVertexAttribArray(0);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindTexture(GL_TEXTURE_2D, 0);
     }
 
     void text(const std::string& value, float x, float y, float scale, const Color& c) {
@@ -673,6 +751,22 @@ struct SplashVideo {
     }
 };
 
+// Cria uma textura GLES2 RGBA8 a partir de pixels já decodificados.
+GLuint createTextureFromRGBA(const uint8_t* pixels, int texWidth, int texHeight) {
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    if (texture == 0) return 0;
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texWidth, texHeight, 0, GL_RGBA,
+                GL_UNSIGNED_BYTE, pixels);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return texture;
+}
+
 struct AppState {
     Renderer renderer;
     SplashVideo splashVideo;
@@ -691,8 +785,13 @@ struct AppState {
     std::string profileStoragePath;
     std::chrono::steady_clock::time_point splashStarted;
     std::chrono::steady_clock::time_point profileSelectionStarted;
+    GLuint logoTexture = 0;
+    bool logoLoadAttempted = false;
+    float logoAspect = 1.f;
 
     void initializeRenderer() {
+        logoTexture = 0;
+        logoLoadAttempted = false;
         rendererInitialized = renderer.initialize(window);
         if (!rendererInitialized) {
             __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to initialize the app renderer");
@@ -703,6 +802,68 @@ struct AppState {
                                 "Profile selection initialization failed; check model assets and GLES support");
         }
         profileSelectionStarted = std::chrono::steady_clock::now();
+    }
+
+    // Decodifica app/src/main/assets/logo/logo.png (via BitmapFactory, pelo
+    // lado Java) e sobe a textura. So tenta uma vez por contexto GL; se o
+    // arquivo nao existir, o app segue usando o simbolo vetorial no lugar.
+    void ensureLogoTexture() {
+        if (logoTexture != 0 || logoLoadAttempted) return;
+        logoLoadAttempted = true;
+        if (!activity || !activity->vm || !activity->clazz) return;
+
+        JNIEnv* env = nullptr;
+        bool attached = false;
+        const jint status = activity->vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+        if (status == JNI_EDETACHED) {
+            if (activity->vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+            attached = true;
+        } else if (status != JNI_OK) {
+            return;
+        }
+
+        jclass activityClass = env->GetObjectClass(activity->clazz);
+        jmethodID decodeMethod = activityClass
+            ? env->GetMethodID(activityClass, "decodeAssetBitmapRGBA", "(Ljava/lang/String;)[I")
+            : nullptr;
+        if (decodeMethod) {
+            jstring path = env->NewStringUTF("logo/logo.png");
+            auto result = static_cast<jintArray>(
+                env->CallObjectMethod(activity->clazz, decodeMethod, path));
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+                result = nullptr;
+            }
+            if (result) {
+                const jsize length = env->GetArrayLength(result);
+                if (length >= 2) {
+                    jint* data = env->GetIntArrayElements(result, nullptr);
+                    const int texWidth = data[0];
+                    const int texHeight = data[1];
+                    if (texWidth > 0 && texHeight > 0 &&
+                        static_cast<jsize>(2 + texWidth * texHeight) <= length) {
+                        std::vector<uint8_t> rgba(
+                            static_cast<size_t>(texWidth) * static_cast<size_t>(texHeight) * 4);
+                        for (int i = 0; i < texWidth * texHeight; ++i) {
+                            const uint32_t pixel = static_cast<uint32_t>(data[2 + i]);
+                            rgba[i * 4 + 0] = static_cast<uint8_t>((pixel >> 16) & 0xFFu);
+                            rgba[i * 4 + 1] = static_cast<uint8_t>((pixel >> 8) & 0xFFu);
+                            rgba[i * 4 + 2] = static_cast<uint8_t>(pixel & 0xFFu);
+                            rgba[i * 4 + 3] = static_cast<uint8_t>((pixel >> 24) & 0xFFu);
+                        }
+                        logoTexture = createTextureFromRGBA(rgba.data(), texWidth, texHeight);
+                        logoAspect = texHeight > 0
+                            ? static_cast<float>(texWidth) / static_cast<float>(texHeight) : 1.f;
+                    }
+                    env->ReleaseIntArrayElements(result, data, JNI_ABORT);
+                }
+                env->DeleteLocalRef(result);
+            }
+            env->DeleteLocalRef(path);
+        }
+        if (activityClass) env->DeleteLocalRef(activityClass);
+        if (attached) activity->vm->DetachCurrentThread();
     }
 
     void initializeWindow(ANativeWindow* newWindow, ANativeActivity* nativeActivity,
@@ -739,181 +900,255 @@ struct AppState {
         return profileSelection.textWidth(text, scale);
     }
 
-    void drawNavigation() {
+    // Barra superior (logo, status) e barra lateral de navegacao, desenhadas
+    // em toda tela exceto na selecao de perfil.
+    void drawChrome() {
+        ensureLogoTexture();
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
-        float barHeight = std::clamp(h * .09f, 58.f, 82.f);
-        renderer.rect(0, h - barHeight, w, barHeight, kBg);
-        renderer.rect(0, h - barHeight, w, 1, kPanel2);
 
-        const char* labels[] = {"INICIO", "BIBLIOTECA", "SISTEMA", "AJUSTES"};
-        for (int i = 0; i < 4; ++i) {
-            float itemW = w / 4.f;
-            float x = itemW * i;
-            bool active = static_cast<int>(screen) == i;
-            bool focused = focusedNavigation == i;
+        renderer.rect(0, 0, w, kTopBarH, kPanel);
+        renderer.rect(0, kTopBarH - 1.f, w, 1.f, kPanel2);
+
+        const float logoBoxH = 34.f;
+        if (logoTexture != 0) {
+            const float logoW = std::clamp(logoBoxH * logoAspect, 20.f, 160.f);
+            renderer.texturedRect(24.f, (kTopBarH - logoBoxH) * .5f, logoW, logoBoxH, logoTexture);
+            smoothText("XENON", 24.f + logoW + 14.f, (kTopBarH - 18.f) * .5f, 4.6f, kText);
+        } else {
+            renderer.roundedRect(24.f, (kTopBarH - 36.f) * .5f, 36.f, 36.f, kGreen);
+            renderer.rotatedRect(24.f + 18.f, kTopBarH * .5f, 22.f, 4.f, .785398f, kBg);
+            renderer.rotatedRect(24.f + 18.f, kTopBarH * .5f, 22.f, 4.f, -.785398f, kBg);
+            smoothText("XENON", 24.f + 50.f, (kTopBarH - 18.f) * .5f, 4.6f, kText);
+        }
+
+        // Relogio, barras de sinal e wi-fi no canto superior direito.
+        const float statusY = kTopBarH * .5f;
+        float cursorX = w - 26.f;
+        const time_t now = std::time(nullptr);
+        char clockBuffer[8] = {};
+        struct tm localTime {};
+        if (localtime_r(&now, &localTime)) {
+            std::snprintf(clockBuffer, sizeof(clockBuffer), "%02d:%02d",
+                         localTime.tm_hour, localTime.tm_min);
+        } else {
+            std::snprintf(clockBuffer, sizeof(clockBuffer), "--:--");
+        }
+        const float clockWidth = smoothTextWidth(clockBuffer, 3.6f);
+        cursorX -= clockWidth;
+        smoothText(clockBuffer, cursorX, statusY - 9.f, 3.6f, kText);
+
+        cursorX -= 34.f;
+        for (int bar = 0; bar < 4; ++bar) {
+            const float barH = 6.f + bar * 4.f;
+            renderer.rect(cursorX + bar * 7.f, statusY + 9.f - barH, 5.f, barH, kGreen);
+        }
+
+        cursorX -= 40.f;
+        renderer.roundedRect(cursorX, statusY - 8.f, 18.f, 14.f, kGreen);
+        renderer.roundedRect(cursorX + 4.f, statusY - 4.f, 10.f, 7.f, kBg);
+
+        // Barra lateral.
+        renderer.rect(0, kTopBarH, kSidebarW, h - kTopBarH, kPanel);
+        renderer.rect(kSidebarW - 1.f, kTopBarH, 1.f, h - kTopBarH, kPanel2);
+
+        static const char* labels[] = {"INICIO", "XENON STORE", "MEUS JOGOS", "CONFIGURACOES", "SOBRE"};
+        for (int i = 0; i < 5; ++i) {
+            const float itemY = kTopBarH + kNavTopPad + i * kNavItemH;
+            const bool active = static_cast<int>(screen) == i;
+            const bool focused = focusedNavigation == i;
             if (active || focused) {
-                renderer.roundedRect(x + itemW * .18f, h - barHeight + 10,
-                                     itemW * .64f, barHeight - 20, kPanel);
-                renderer.roundedRect(x + itemW * .36f, h - barHeight + 16,
-                                     itemW * .28f, 4, focused ? kGreen : kPanel2);
+                renderer.rect(0, itemY, 4.f, kNavItemH - 10.f, kGreen);
+                renderer.rect(4.f, itemY, kSidebarW - 4.f, kNavItemH - 10.f,
+                             active ? kPanel2 : Color{kPanel2.r, kPanel2.g, kPanel2.b, .6f});
             }
-            const float labelScale = 3.1f;
-            const float labelWidth = smoothTextWidth(labels[i], labelScale);
-            smoothText(labels[i], x + itemW * .5f - labelWidth * .5f,
-                       h - barHeight + 40.f, labelScale,
-                       active || focused ? kGreen : kMuted);
+            smoothText(labels[i], 26.f, itemY + (kNavItemH - 10.f) * .5f - 9.f, 2.8f,
+                       active ? kGreen : (focused ? kText : kMuted));
         }
     }
 
     void drawHome() {
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
-        const float margin = std::clamp(w * .045f, 28.f, 48.f);
+        const float x0 = kSidebarW;
+        const float y0 = kTopBarH;
+        const float margin = 28.f;
+        const float contentW = w - x0;
 
-        renderer.roundedRect(margin, 24.f, 46.f, 46.f, kGreen);
-        renderer.rotatedRect(margin + 23.f, 47.f, 29.f, 5.f, .785398f, kBg);
-        renderer.rotatedRect(margin + 23.f, 47.f, 29.f, 5.f, -.785398f, kBg);
-        smoothText("XENON", margin + 58.f, 25.f, 6.5f, kText);
-        smoothText("PAINEL PRINCIPAL", margin + 58.f, 59.f, 2.8f, kGreen);
-
-        const float profileW = 294.f;
+        // Painel do perfil ativo, no canto superior direito.
+        const float profileW = 240.f;
         const float profileX = w - margin - profileW;
-        renderer.roundedRect(profileX, 22.f, profileW, 58.f, kPanel);
-        renderer.roundedRect(profileX + 12.f, 35.f, 32.f, 32.f, kGreen);
-        smoothText("X", profileX + 21.f, 42.f, 3.f, kBg);
-        smoothText("PERFIL ATIVO", profileX + 56.f, 30.f, 2.1f, kMuted);
+        const float profileY = y0 + margin;
+        renderer.roundedRect(profileX, profileY, profileW, 66.f, kPanel);
+        renderer.roundedRect(profileX + 14.f, profileY + 12.f, 42.f, 42.f, kGreen);
+        smoothText("X", profileX + 28.f, profileY + 23.f, 3.4f, kBg);
         const char* activeName = profileSelection.activeProfileName();
-        const float nameScale = std::min(
-            3.f, 220.f / std::max(smoothTextWidth(activeName, 1.f), 1.f));
-        smoothText(activeName, profileX + 56.f, 51.f, nameScale, kText);
+        smoothText(activeName, profileX + 68.f, profileY + 14.f, 3.f, kText);
+        smoothText("JOGOS INSTALADOS: 0", profileX + 68.f, profileY + 38.f, 2.0f, kMuted);
 
-        const float heroY = 100.f;
-        const float heroH = std::min(h * .36f, 258.f);
-        const float heroW = w - margin * 2.f;
-        renderer.roundedRect(margin, heroY, heroW, heroH, kPanel);
-        renderer.roundedRect(margin, heroY, 8.f, heroH, kGreen);
-        smoothText("EMULADOR XBOX 360", margin + 30.f, heroY + 30.f, 2.8f, kGreen);
-        smoothText("SEU XBOX, NO CELULAR", margin + 30.f, heroY + 76.f, 6.8f, kText);
-        smoothText("Biblioteca e emulador, tudo em um so lugar.",
-                   margin + 30.f, heroY + 112.f, 3.2f, kMuted);
-        const float openW = 244.f;
-        const float openY = heroY + heroH - 58.f;
-        renderer.roundedRect(margin + 30.f, openY, openW, 40.f, kGreen);
-        const char* openText = "VER BIBLIOTECA";
-        smoothText(openText, margin + 30.f + (openW - smoothTextWidth(openText, 2.6f)) * .5f,
-                   openY + 12.f, 2.6f, kBg);
+        // Banner de boas-vindas.
+        const float heroY = y0 + margin;
+        const float heroH = 258.f;
+        const float heroW = contentW - margin * 2.f - profileW - 18.f;
+        renderer.roundedRect(x0 + margin, heroY, heroW, heroH, kPanel);
+        renderer.rect(x0 + margin, heroY, 6.f, heroH, kGreen);
 
-        const float markSize = std::min(174.f, heroH - 38.f);
-        const float markX = w - margin - markSize - 42.f;
+        const float markSize = 110.f;
+        const float markX = x0 + margin + 30.f;
         const float markY = heroY + (heroH - markSize) * .5f;
-        renderer.roundedRect(markX, markY, markSize, markSize,
-                             Color{.89f, .94f, .91f, 1.f});
-        renderer.rotatedRect(markX + markSize * .5f, markY + markSize * .5f,
-                             markSize * .62f, 11.f, .785398f, kGreen);
-        renderer.rotatedRect(markX + markSize * .5f, markY + markSize * .5f,
-                             markSize * .62f, 11.f, -.785398f, kGreen);
+        if (logoTexture != 0) {
+            float logoW = markSize;
+            float logoH = markSize / std::max(logoAspect, 0.01f);
+            if (logoH > markSize) {
+                logoH = markSize;
+                logoW = markSize * logoAspect;
+            }
+            renderer.texturedRect(markX + (markSize - logoW) * .5f,
+                                  markY + (markSize - logoH) * .5f, logoW, logoH, logoTexture);
+        } else {
+            renderer.roundedRect(markX, markY, markSize, markSize, Color{.09f, .14f, .12f, 1.f});
+            renderer.rotatedRect(markX + markSize * .5f, markY + markSize * .5f,
+                                 markSize * .62f, 11.f, .785398f, kGreen);
+            renderer.rotatedRect(markX + markSize * .5f, markY + markSize * .5f,
+                                 markSize * .62f, 11.f, -.785398f, kGreen);
+        }
 
-        const float cardsY = heroY + heroH + 16.f;
-        const float cardH = 100.f;
-        const float cardW = (w - margin * 2.f - 16.f) / 2.f;
-        renderer.roundedRect(margin, cardsY, cardW, cardH, kBg);
-        renderer.rect(margin, cardsY, cardW, 1.f, kPanel2);
-        renderer.roundedRect(margin + 18.f, cardsY + 22.f, 38.f, 38.f, kPanel);
-        smoothText("01", margin + 26.f, cardsY + 33.f, 3.f, kGreen);
-        smoothText("BIBLIOTECA", margin + 70.f, cardsY + 30.f, 3.8f, kText);
-        smoothText("Nenhum titulo carregado", margin + 70.f, cardsY + 58.f, 2.5f, kMuted);
+        const float textX = markX + markSize + 34.f;
+        smoothText("BEM-VINDO AO", textX, heroY + 44.f, 3.0f, kGreen);
+        smoothText("XENON", textX, heroY + 78.f, 8.2f, kText);
+        smoothText("Sua nova experiencia em jogos comeca aqui.",
+                   textX, heroY + 142.f, 3.0f, kMuted);
+        const float exploreW = 176.f;
+        const float exploreY = heroY + heroH - 56.f;
+        renderer.roundedRect(textX, exploreY, exploreW, 40.f, kGreen);
+        const char* exploreText = "EXPLORAR";
+        smoothText(exploreText, textX + (exploreW - smoothTextWidth(exploreText, 2.8f)) * .5f,
+                   exploreY + 13.f, 2.8f, kBg);
+        for (int dot = 0; dot < 3; ++dot) {
+            renderer.roundedRect(textX + exploreW + 26.f + dot * 16.f, exploreY + 16.f, 8.f, 8.f,
+                                 dot == 0 ? kGreen : kPanel2);
+        }
 
-        const float secondX = margin + cardW + 16.f;
-        renderer.roundedRect(secondX, cardsY, cardW, cardH, kBg);
-        renderer.rect(secondX, cardsY, cardW, 1.f, kPanel2);
-        renderer.roundedRect(secondX + 18.f, cardsY + 22.f, 38.f, 38.f, kGreen);
-        smoothText("ON", secondX + 25.f, cardsY + 34.f, 2.6f, kBg);
-        smoothText("SISTEMA", secondX + 70.f, cardsY + 30.f, 3.8f, kText);
-        smoothText("Emulador experimental", secondX + 70.f, cardsY + 58.f, 2.5f, kMuted);
+        // Linha "Destaques": vitrine dos jogos em destaque.
+        const float destaquesY = heroY + heroH + 24.f;
+        smoothText("DESTAQUES", x0 + margin, destaquesY, 3.6f, kText);
+        const char* verTodos = "VER TODOS";
+        smoothText(verTodos, w - margin - smoothTextWidth(verTodos, 2.2f), destaquesY + 4.f,
+                   2.2f, kGreen);
 
-        const float statusY = cardsY + cardH + 12.f;
-        renderer.roundedRect(margin, statusY, w - margin * 2.f, 44.f, kPanel);
-        renderer.roundedRect(margin + 14.f, statusY + 13.f, 18.f, 18.f, kGreen);
-        smoothText("SISTEMA PRONTO", margin + 44.f, statusY + 17.f, 2.5f, kText);
-        smoothText("TOQUE NOS CARTOES  |  CONTROLE: SETAS NAVEGAM  A ABRE  X PERFIS",
-                   margin + 250.f, statusY + 17.f, 2.1f, kMuted);
+        const int cardCount = 5;
+        const float cardGap = 14.f;
+        const float cardsY = destaquesY + 28.f;
+        const float cardsAreaW = contentW - margin * 2.f;
+        const float cardW = (cardsAreaW - cardGap * (cardCount - 1)) / cardCount;
+        const float cardH = std::min(188.f, h - cardsY - 24.f);
+        static const char* titles[cardCount] = {"FORZA HORIZON", "SONIC GEN.", "MINECRAFT",
+                                                "PORTAL 2", "PLANTS VS ZUMBIS"};
+        static const char* initials[cardCount] = {"FH", "SG", "MC", "P2", "PZ"};
+        for (int i = 0; i < cardCount; ++i) {
+            const float cardX = x0 + margin + i * (cardW + cardGap);
+            renderer.roundedRect(cardX, cardsY, cardW, cardH, kPanel);
+            renderer.roundedRect(cardX, cardsY, cardW, cardH * .62f, kPanel2);
+            const float badgeSize = 44.f;
+            const float badgeX = cardX + 14.f;
+            const float badgeY = cardsY + cardH * .62f - badgeSize * .5f;
+            renderer.roundedRect(badgeX, badgeY, badgeSize, badgeSize, kGreen);
+            const float initialScale = 3.1f;
+            const float initialWidth = smoothTextWidth(initials[i], initialScale);
+            smoothText(initials[i], badgeX + (badgeSize - initialWidth) * .5f,
+                       badgeY + 14.f, initialScale, kBg);
+            smoothText(titles[i], cardX + 14.f, cardsY + cardH * .62f + 18.f, 2.0f, kText);
+        }
+    }
+
+    void drawStore() {
+        float w = static_cast<float>(renderer.width);
+        float h = static_cast<float>(renderer.height);
+        const float x0 = kSidebarW + 28.f;
+        const float y0 = kTopBarH + 28.f;
+        smoothText("XENON STORE", x0, y0, 7.f, kText);
+        smoothText("Em breve: catalogo de jogos para baixar", x0, y0 + 30.f, 3.0f, kMuted);
+        renderer.roundedRect(x0, y0 + 46.f, w - kSidebarW - 56.f, h - y0 - 46.f - 24.f, kPanel);
+        smoothText("Nenhuma loja conectada ainda", x0 + 24.f, y0 + 80.f, 3.2f, kMuted);
     }
 
     void drawLibrary() {
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
-        float margin = std::clamp(w * .06f, 18.f, 42.f);
-        smoothText("BIBLIOTECA", margin, 42, 7.f, kText);
-        smoothText("Sua colecao de jogos", margin, 72, 3.2f, kMuted);
-        float cardY = 118.f;
-        renderer.roundedRect(margin, cardY, w - margin * 2, h - cardY - 112.f, kPanel);
-        renderer.roundedRect(margin + 32.f, cardY + 46.f, 82.f, 82.f, kBg);
-        renderer.roundedRect(margin + 55.f, cardY + 69.f, 36.f, 36.f, kGreen);
-        smoothText("X", margin + 67.f, cardY + 80.f, 4.0f, kBg);
-        smoothText("Nenhum jogo encontrado", margin + 138.f, cardY + 58.f, 5.0f, kText);
-        smoothText("Adicione um arquivo XEX para comecar.", margin + 138.f,
+        const float x0 = kSidebarW + 28.f;
+        const float y0 = kTopBarH + 28.f;
+        const float contentW = w - kSidebarW - 56.f;
+        smoothText("MEUS JOGOS", x0, y0, 7.f, kText);
+        smoothText("Sua colecao de jogos", x0, y0 + 30.f, 3.2f, kMuted);
+        float cardY = y0 + 46.f;
+        renderer.roundedRect(x0, cardY, contentW, h - cardY - 24.f, kPanel);
+        renderer.roundedRect(x0 + 32.f, cardY + 46.f, 82.f, 82.f, kBg);
+        renderer.roundedRect(x0 + 55.f, cardY + 69.f, 36.f, 36.f, kGreen);
+        smoothText("X", x0 + 67.f, cardY + 80.f, 4.0f, kBg);
+        smoothText("Nenhum jogo encontrado", x0 + 138.f, cardY + 58.f, 5.0f, kText);
+        smoothText("Adicione um arquivo XEX para comecar.", x0 + 138.f,
                    cardY + 92.f, 3.2f, kMuted);
-        renderer.roundedRect(margin + 138.f, cardY + 128.f, 190.f, 44.f, kGreen);
+        renderer.roundedRect(x0 + 138.f, cardY + 128.f, 190.f, 44.f, kGreen);
         const char* addText = "ADICIONAR JOGO";
-        smoothText(addText, margin + 138.f + (190.f - smoothTextWidth(addText, 3.1f)) * .5f,
+        smoothText(addText, x0 + 138.f + (190.f - smoothTextWidth(addText, 3.1f)) * .5f,
                    cardY + 141.f, 3.1f, kBg);
     }
 
-    void drawSystem() {
+    void drawAbout() {
         float w = static_cast<float>(renderer.width);
-        float h = static_cast<float>(renderer.height);
-        float margin = std::clamp(w * .06f, 18.f, 42.f);
-        smoothText("SISTEMA", margin, 42, 7.f, kText);
-        smoothText("Resumo do emulador", margin, 72, 3.2f, kMuted);
+        const float x0 = kSidebarW + 28.f;
+        const float y0 = kTopBarH + 28.f;
+        const float contentW = w - kSidebarW - 56.f;
+        smoothText("SOBRE", x0, y0, 7.f, kText);
+        smoothText("Resumo do emulador", x0, y0 + 30.f, 3.2f, kMuted);
 
-        float cardY = 118.f;
-        float cardW = (w - margin * 2 - 24.f) / 2.f;
-        renderer.roundedRect(margin, cardY, cardW, 210.f, kPanel);
-        smoothText("MEMORIA", margin + 24.f, cardY + 24.f, 3.1f, kMuted);
-        smoothText("512 MB", margin + 24.f, cardY + 68.f, 8.f, kText);
-        smoothText("RAM UNIFICADA", margin + 24.f, cardY + 112.f, 3.2f, kGreen);
-        renderer.roundedRect(margin + 24.f, cardY + 158.f, cardW - 48.f, 10.f, kPanel2);
-        renderer.roundedRect(margin + 24.f, cardY + 158.f, (cardW - 48.f) * .18f, 10.f, kGreen);
+        float cardY = y0 + 46.f;
+        float cardW = (contentW - 24.f) / 2.f;
+        renderer.roundedRect(x0, cardY, cardW, 210.f, kPanel);
+        smoothText("MEMORIA", x0 + 24.f, cardY + 24.f, 3.1f, kMuted);
+        smoothText("512 MB", x0 + 24.f, cardY + 68.f, 8.f, kText);
+        smoothText("RAM UNIFICADA", x0 + 24.f, cardY + 112.f, 3.2f, kGreen);
+        renderer.roundedRect(x0 + 24.f, cardY + 158.f, cardW - 48.f, 10.f, kPanel2);
+        renderer.roundedRect(x0 + 24.f, cardY + 158.f, (cardW - 48.f) * .18f, 10.f, kGreen);
 
-        renderer.roundedRect(margin + cardW + 24.f, cardY, cardW, 210.f, kBg);
-        renderer.rect(margin + cardW + 24.f, cardY, cardW, 1.f, kPanel2);
-        smoothText("PROCESSADOR", margin + cardW + 48.f, cardY + 24.f, 3.1f, kMuted);
-        smoothText("XENON", margin + cardW + 48.f, cardY + 68.f, 7.f, kText);
-        smoothText("3 nucleos  /  6 threads", margin + cardW + 48.f,
+        renderer.roundedRect(x0 + cardW + 24.f, cardY, cardW, 210.f, kBg);
+        renderer.rect(x0 + cardW + 24.f, cardY, cardW, 1.f, kPanel2);
+        smoothText("PROCESSADOR", x0 + cardW + 48.f, cardY + 24.f, 3.1f, kMuted);
+        smoothText("XENON", x0 + cardW + 48.f, cardY + 68.f, 7.f, kText);
+        smoothText("3 nucleos  /  6 threads", x0 + cardW + 48.f,
                    cardY + 112.f, 3.3f, kGreen);
-        smoothText("Arquitetura PowerPC", margin + cardW + 48.f,
+        smoothText("Arquitetura PowerPC", x0 + cardW + 48.f,
                    cardY + 158.f, 3.0f, kMuted);
 
         float gpuY = cardY + 234.f;
-        renderer.roundedRect(margin, gpuY, w - margin * 2, 92.f, kPanel);
-        renderer.roundedRect(margin + 18.f, gpuY + 18.f, 56.f, 56.f, kBg);
-        smoothText("GPU", margin + 29.f, gpuY + 38.f, 3.1f, kGreen);
-        smoothText("XENOS", margin + 92.f, gpuY + 22.f, 4.5f, kText);
-        smoothText("Nao iniciada", margin + 92.f, gpuY + 52.f, 3.2f, kMuted);
+        renderer.roundedRect(x0, gpuY, contentW, 92.f, kPanel);
+        renderer.roundedRect(x0 + 18.f, gpuY + 18.f, 56.f, 56.f, kBg);
+        smoothText("GPU", x0 + 29.f, gpuY + 38.f, 3.1f, kGreen);
+        smoothText("XENOS", x0 + 92.f, gpuY + 22.f, 4.5f, kText);
+        smoothText("Nao iniciada", x0 + 92.f, gpuY + 52.f, 3.2f, kMuted);
     }
 
     void drawSettings() {
         float w = static_cast<float>(renderer.width);
-        float h = static_cast<float>(renderer.height);
-        float margin = std::clamp(w * .06f, 18.f, 42.f);
-        smoothText("AJUSTES", margin, 42, 7.f, kText);
-        smoothText("Configuracoes do aplicativo", margin, 72, 3.2f, kMuted);
+        const float x0 = kSidebarW + 28.f;
+        const float y0 = kTopBarH + 28.f;
+        const float contentW = w - kSidebarW - 56.f;
+        smoothText("CONFIGURACOES", x0, y0, 7.f, kText);
+        smoothText("Configuracoes do aplicativo", x0, y0 + 30.f, 3.2f, kMuted);
         for (int i = 0; i < 3; ++i) {
-            float y = 112.f + i * 92.f;
-            renderer.roundedRect(margin, y, w - margin * 2, 76, kPanel);
+            float y = y0 + 70.f + i * 92.f;
+            renderer.roundedRect(x0, y, contentW, 76, kPanel);
             const char* labels[] = {"VERIFICAR MEMORIA", "RASTREIO MMIO", "RELATORIO DE COMPATIBILIDADE"};
             const char* descriptions[] = {"Executar diagnostico rapido",
                                           "Monitorar chamadas do sistema",
                                           "Gerar dados para depuracao"};
-            smoothText(labels[i], margin + 24.f, y + 20.f, 3.5f, kText);
-            smoothText(descriptions[i], margin + 24.f, y + 43.f, 2.7f, kMuted);
-            renderer.roundedRect(w - margin - 82.f, y + 24.f, 58.f, 28.f,
+            smoothText(labels[i], x0 + 24.f, y + 20.f, 3.5f, kText);
+            smoothText(descriptions[i], x0 + 24.f, y + 43.f, 2.7f, kMuted);
+            renderer.roundedRect(x0 + contentW - 82.f, y + 24.f, 58.f, 28.f,
                                  i == 0 ? kGreen : kPanel2);
-            renderer.roundedRect(w - margin - (i == 0 ? 59.f : 75.f),
+            renderer.roundedRect(x0 + contentW - (i == 0 ? 59.f : 75.f),
                                  y + 29.f, 18.f, 18.f, i == 0 ? kBg : kMuted);
         }
-        (void)h;
     }
 
     void drawSplash() {
@@ -1038,12 +1273,13 @@ struct AppState {
         }
         switch (screen) {
             case Screen::Home: drawHome(); break;
+            case Screen::Store: drawStore(); break;
             case Screen::Library: drawLibrary(); break;
-            case Screen::System: drawSystem(); break;
             case Screen::Settings: drawSettings(); break;
+            case Screen::About: drawAbout(); break;
             case Screen::ProfileSelect: drawProfileSelect(); break;
         }
-        if (screen != Screen::ProfileSelect) drawNavigation();
+        if (screen != Screen::ProfileSelect) drawChrome();
         renderer.present();
     }
 
@@ -1054,43 +1290,38 @@ struct AppState {
             return;
         }
         float w = static_cast<float>(renderer.width);
-        float h = static_cast<float>(renderer.height);
-        const float margin = std::clamp(w * .045f, 28.f, 48.f);
-        const float profileW = 294.f;
-        const float profileX = w - margin - profileW;
-        if (screen == Screen::Home && y >= 22.f && y < 80.f &&
-            x >= profileX && x < profileX + profileW) {
-            profileSelection.setSelectedProfile(profileSelection.activeProfile());
-            screen = Screen::ProfileSelect;
+
+        // Barra lateral: cada item ocupa uma faixa vertical fixa.
+        if (x < kSidebarW && y >= kTopBarH) {
+            int index = static_cast<int>((y - kTopBarH - kNavTopPad) / kNavItemH);
+            if (index >= 0 && index < 5) {
+                focusedNavigation = index;
+                screen = static_cast<Screen>(index);
+            }
             return;
         }
-        const float heroY = 100.f;
-        const float heroH = std::min(h * .36f, 258.f);
-        if (screen == Screen::Home && y >= heroY && y < heroY + heroH &&
-            x >= margin && x < w - margin) {
-            focusedNavigation = static_cast<int>(Screen::Library);
-            screen = Screen::Library;
-            return;
-        }
-        const float cardY = heroY + heroH + 16.f;
-        const float cardW = (w - margin * 2.f - 16.f) / 2.f;
-        if (screen == Screen::Home && y >= cardY && y < cardY + 100.f) {
-            if (x >= margin && x < margin + cardW) {
-                focusedNavigation = static_cast<int>(Screen::Library);
-            } else if (x >= margin + cardW + 16.f && x < w - margin) {
-                focusedNavigation = static_cast<int>(Screen::System);
-            } else {
+        if (y < kTopBarH) return;
+
+        if (screen == Screen::Home) {
+            const float margin = 28.f;
+            const float profileW = 240.f;
+            const float profileX = w - margin - profileW;
+            const float profileY = kTopBarH + margin;
+            if (x >= profileX && x < profileX + profileW &&
+                y >= profileY && y < profileY + 66.f) {
+                profileSelection.setSelectedProfile(profileSelection.activeProfile());
+                screen = Screen::ProfileSelect;
                 return;
             }
-            screen = static_cast<Screen>(focusedNavigation);
-            return;
-        }
-        float barHeight = std::clamp(h * .09f, 58.f, 82.f);
-        if (y >= h - barHeight) {
-            int index = std::clamp(static_cast<int>(x / (w / 4.f)), 0, 3);
-            focusedNavigation = index;
-            screen = static_cast<Screen>(index);
-            return;
+            const float heroY = kTopBarH + margin;
+            const float heroH = 258.f;
+            const float heroW = w - kSidebarW - margin * 2.f - profileW - 18.f;
+            if (x >= kSidebarW + margin && x < kSidebarW + margin + heroW &&
+                y >= heroY && y < heroY + heroH) {
+                focusedNavigation = static_cast<int>(Screen::Library);
+                screen = Screen::Library;
+                return;
+            }
         }
     }
 
@@ -1100,11 +1331,11 @@ struct AppState {
             return;
         }
         switch (keyCode) {
-            case AKEYCODE_DPAD_LEFT:
-                focusedNavigation = (focusedNavigation + 3) % 4;
+            case AKEYCODE_DPAD_UP:
+                focusedNavigation = (focusedNavigation + 4) % 5;
                 break;
-            case AKEYCODE_DPAD_RIGHT:
-                focusedNavigation = (focusedNavigation + 1) % 4;
+            case AKEYCODE_DPAD_DOWN:
+                focusedNavigation = (focusedNavigation + 1) % 5;
                 break;
             case AKEYCODE_DPAD_CENTER:
             case AKEYCODE_ENTER:
@@ -1202,9 +1433,14 @@ struct AppState {
             return;
         }
 
-        float horizontal = std::abs(leftX) >= std::abs(rightX) ? leftX : rightX;
-        if (std::abs(hatX) > .5f) horizontal = hatX;
-        const int direction = horizontal < -.55f ? -1 : horizontal > .55f ? 1 : 0;
+        // A barra de navegacao agora e vertical (lateral), entao o controle
+        // usa o eixo vertical do analogico/direcional em vez do horizontal.
+        const float leftY = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Y, 0);
+        const float rightY = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_RY, 0);
+        const float hatY = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_Y, 0);
+        float vertical = std::abs(leftY) >= std::abs(rightY) ? leftY : rightY;
+        if (std::abs(hatY) > .5f) vertical = hatY;
+        const int direction = vertical < -.55f ? -1 : vertical > .55f ? 1 : 0;
         if (direction == 0) {
             controllerDirection = 0;
             return;
@@ -1213,7 +1449,7 @@ struct AppState {
         if (direction == controllerDirection && now < controllerRepeatAt) return;
         controllerDirection = direction;
         controllerRepeatAt = now + std::chrono::milliseconds(300);
-        focusedNavigation = (focusedNavigation + 4 + direction) % 4;
+        focusedNavigation = (focusedNavigation + 5 + direction) % 5;
     }
 };
 
