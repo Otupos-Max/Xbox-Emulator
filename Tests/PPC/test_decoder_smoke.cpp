@@ -18,8 +18,9 @@
 
 #include <cstdint>
 
-// Descomente quando o decoder estiver disponível:
-// #include "Core/CPU/PowerPC/PPCDecoder.hpp"
+#include "Core/CPU/PowerPC/PPCDecoder.hpp"
+#include "Core/CPU/PowerPC/PPCInterpreter.hpp"
+#include "Core/Memory/MemoryManager.hpp"
 
 TEST(PPCDecoderSmoke, InfrastructureBuilds)
 {
@@ -47,4 +48,54 @@ TEST(PPCDecoderSmoke, BranchLinkRegisterIsBranchFamily)
 
     const std::uint32_t primary_opcode = kBlr >> 26;
     EXPECT_EQ(primary_opcode, 19u);
+}
+
+TEST(PPCDecoder, ResolvesRelativeAndAbsoluteBranchTargets)
+{
+    const auto relative = PPCDecoder::decode(0x48000009u, 0x100u);
+    EXPECT_EQ(relative.opcode, PPCOpcode::BranchLink);
+    EXPECT_EQ(relative.branch_target, 0x108);
+
+    const auto backward = PPCDecoder::decode(0x4BFFFFFCu, 0x100u);
+    EXPECT_EQ(backward.opcode, PPCOpcode::Branch);
+    EXPECT_EQ(backward.branch_target, 0xFC);
+
+    const auto absolute = PPCDecoder::decode(0x48000102u, 0x100u);
+    EXPECT_EQ(absolute.branch_target, 0x100);
+}
+
+TEST(PPCInterpreter, FetchesAndExecutesBigEndianInstructions)
+{
+    xboxemu::memory::MemoryManager memory;
+    xboxemu::memory::MemoryManager::Config config;
+    config.ram_size = 0x1000;
+    ASSERT_TRUE(memory.initialize(config));
+    memory.write_u32(0x100, 0x38600005u); // addi r3, r0, 5
+
+    PPCInterpreter interpreter;
+    auto& state = interpreter.getState();
+    state.pc = 0x100;
+    state.running = true;
+
+    ASSERT_TRUE(interpreter.step(memory));
+    EXPECT_EQ(state.gpr[3], 5u);
+    EXPECT_EQ(state.pc, 0x104u);
+}
+
+TEST(PPCInterpreter, BranchLinkSetsReturnAddressAndBranchesRelativeToPc)
+{
+    xboxemu::memory::MemoryManager memory;
+    xboxemu::memory::MemoryManager::Config config;
+    config.ram_size = 0x1000;
+    ASSERT_TRUE(memory.initialize(config));
+    memory.write_u32(0x100, 0x48000009u); // bl +8
+
+    PPCInterpreter interpreter;
+    auto& state = interpreter.getState();
+    state.pc = 0x100;
+    state.running = true;
+
+    ASSERT_TRUE(interpreter.step(memory));
+    EXPECT_EQ(state.lr, 0x104u);
+    EXPECT_EQ(state.pc, 0x108u);
 }

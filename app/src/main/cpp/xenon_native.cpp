@@ -10,6 +10,7 @@
 #include <media/NdkMediaExtractor.h>
 #include <media/NdkMediaFormat.h>
 #include <jni.h>
+#include "Core/Filesystem/XdvdfsImage.hpp"
 #include "ProfileSelectionScreen.hpp"
 
 #include <algorithm>
@@ -2287,12 +2288,25 @@ struct AppState {
     void attemptLaunchSelectedIso() {
         if (libraryGames.empty() || librarySelection >= libraryGames.size()) return;
         const std::string path = profileStoragePath + "/games/" + libraryGames[librarySelection];
-        std::ifstream iso(path, std::ios::binary);
-        if (!iso) {
-            libraryStatus = "Nao foi possivel abrir o arquivo ISO.";
+        xboxemu::filesystem::XdvdfsImage image;
+        std::string error;
+        if (!image.open(path, &error)) {
+            libraryStatus = "ISO invalido ou nao suportado: " + error;
             return;
         }
-        libraryStatus = "Arquivo aberto. O core ainda nao tem loader XDVDFS/XEX para executar o ISO.";
+        xboxemu::filesystem::XdvdfsFile executable;
+        if (!image.findFile("default.xex", executable)) {
+            libraryStatus = "XDVDFS aberto, mas default.xex nao foi encontrado.";
+            return;
+        }
+        std::vector<uint8_t> header;
+        if (!image.readFilePrefix("default.xex", 4, header, &error) ||
+            header.size() != 4 || std::memcmp(header.data(), "XEX2", 4) != 0) {
+            libraryStatus = "default.xex encontrado, mas a assinatura XEX2 e invalida.";
+            return;
+        }
+        libraryStatus = "XEX2 encontrado (" + std::to_string(executable.size)
+                + " bytes), mas o core ainda nao descomprime/carrega XEX.";
     }
 
     void drawLibrary() {

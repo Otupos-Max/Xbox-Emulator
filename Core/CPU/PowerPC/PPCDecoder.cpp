@@ -55,13 +55,15 @@ PPCInstruction PPCDecoder::decode(uint32_t instruction, uint32_t address) {
             // LI ocupa bits[2..25] — máscara 0x03FFFFFC exclui AA (bit1) e LK (bit0).
             // O valor já é múltiplo de 4 (alinhado), então é o offset direto.
             // Sign-extend 26→32 bits via shift aritmético.
-            const int32_t li_raw = static_cast<int32_t>(instruction & 0x03FF'FFFCu);
-            const int32_t li     = (li_raw << 6) >> 6;  // sign-extend 26→32 bits
+            const uint32_t li_raw = instruction & 0x03FF'FFFCu;
+            const int32_t li = (li_raw & 0x0200'0000u) != 0
+                ? static_cast<int32_t>(li_raw) - 0x0400'0000
+                : static_cast<int32_t>(li_raw);
 
             result.branch_absolute = aa;
             result.branch_target   = aa
-                ? li                                        // endereço absoluto
-                : static_cast<int32_t>(address) + li;      // PC-relativo
+                ? static_cast<int64_t>(li)                  // endereço absoluto
+                : static_cast<int64_t>(address) + li;      // PC-relativo
 
             result.opcode = lk ? PPCOpcode::BranchLink : PPCOpcode::Branch;
             break;

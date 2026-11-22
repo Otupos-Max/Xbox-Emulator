@@ -29,6 +29,8 @@ target_include_directories(xenon_native PRIVATE
 
 target_link_libraries(xenon_native
     PRIVATE
+        xboxemu_cpu
+        xboxemu_filesystem
         xboxemu_memory
         native_app_glue
         android

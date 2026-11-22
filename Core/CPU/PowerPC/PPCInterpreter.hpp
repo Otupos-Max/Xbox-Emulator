@@ -4,6 +4,10 @@
 #include "PPCDecoder.hpp"
 #include <cstdint>
 
+namespace xboxemu::memory {
+class MemoryManager;
+}
+
 class PPCInterpreter {
 public:
     struct State {
@@ -17,6 +21,7 @@ public:
 
     void reset();
     void execute(const PPCInstruction& instruction);
+    bool step(xboxemu::memory::MemoryManager& memory);
 
     State& getState();
     const State& getState() const;

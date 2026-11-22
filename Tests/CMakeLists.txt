@@ -41,6 +41,12 @@ endfunction()
 # PPC
 xboxemu_add_test(test_ppc_decoder_smoke
     SOURCES PPC/test_decoder_smoke.cpp
+    LIBS    xboxemu_cpu
+)
+
+xboxemu_add_test(test_xdvdfs_image
+    SOURCES Filesystem/test_xdvdfs_image.cpp
+    LIBS    xboxemu_filesystem
 )
 
 # Memory

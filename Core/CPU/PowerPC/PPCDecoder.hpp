@@ -40,7 +40,7 @@ struct PPCInstruction {
     uint8_t rb = 0;   // campo rB (bits 11-15)
 
     int16_t  immediate      = 0;      // SIMM/UIMM (bits 0-15)
-    int32_t  branch_target  = 0;      // alvo do branch já resolvido (absoluto)
+    int64_t  branch_target  = 0;      // alvo do branch já resolvido (absoluto)
     bool     branch_absolute = false; // true = AA=1 (endereço absoluto no binário)
 
     uint32_t address = 0;  // endereço desta instrução no espaço de memória
