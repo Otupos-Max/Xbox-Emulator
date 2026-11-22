@@ -1820,18 +1820,31 @@ struct AppState {
         StoreLayout L;
         const float w = static_cast<float>(renderer.width);
         const float h = static_cast<float>(renderer.height);
-        L.x0 = kSidebarW + 28.f;
-        L.y0 = kTopBarH + 28.f;
-        L.contentW = w - kSidebarW - 56.f;
-        L.searchBarY = L.y0 + 46.f;
-        L.searchBarH = 52.f;
-        L.gridY = L.searchBarY + L.searchBarH + 24.f;
-        L.columns = 4;
-        L.gap = 16.f;
+        L.x0 = kSidebarW + 36.f;
+        L.y0 = kTopBarH + 32.f;
+        L.contentW = w - kSidebarW - 72.f;
+        // Titulo (~56px) + subtitulo, depois a barra de busca: espaco suficiente
+        // pra nao sobrepor o texto.
+        L.searchBarY = L.y0 + 104.f;
+        L.searchBarH = 56.f;
+        L.gridY = L.searchBarY + L.searchBarH + 32.f;
+        L.gap = 24.f;
+        // Cards em formato retrato (proporcao de capa de caixa do Xbox 360),
+        // com a capa ocupando quase todo o card.
+        const float coverAspect = 1.38f;   // altura / largura da capa
+        const float infoH = 64.f;          // area do titulo abaixo da capa
+        const float targetW = 250.f;
+        const float available = std::max(160.f, h - L.gridY - 28.f);
+        L.columns = std::max(2, static_cast<int>((L.contentW + L.gap) / (targetW + L.gap)));
         L.cardW = (L.contentW - L.gap * (L.columns - 1)) / static_cast<float>(L.columns);
-        L.rows = 2;
-        const float available = h - L.gridY - 24.f;
-        L.cardH = std::min(215.f, (available - L.gap * (L.rows - 1)) / static_cast<float>(L.rows));
+        L.cardH = L.cardW * coverAspect + infoH;
+        if (L.cardH > available) {
+            // Tela baixa: encolhe o card pra caber pelo menos uma fileira inteira.
+            L.cardH = available;
+            L.cardW = (available - infoH) / coverAspect;
+            L.columns = std::max(1, static_cast<int>((L.contentW + L.gap) / (L.cardW + L.gap)));
+        }
+        L.rows = std::max(1, static_cast<int>((available + L.gap) / (L.cardH + L.gap)));
         L.maxVisible = L.columns * L.rows;
         return L;
     }
@@ -1862,16 +1875,17 @@ struct AppState {
             std::snprintf(subtitle, sizeof(subtitle), "%d jogo(s) no catalogo",
                          static_cast<int>(games.size()));
         }
-        smoothText(subtitle, L.x0, L.y0 + 30.f, 2.6f, kMuted);
+        smoothText(subtitle, L.x0, L.y0 + 66.f, 2.6f, kMuted);
 
         // Barra de busca (toque abre o dialogo nativo de busca do Android).
-        renderer.roundedRect(L.x0, L.searchBarY, L.contentW, L.searchBarH, kPanel, 12.f);
-        renderer.roundedRect(L.x0 + 16.f, L.searchBarY + L.searchBarH * .5f - 9.f, 18.f, 18.f, kMuted, 9.f);
+        renderer.roundedRect(L.x0, L.searchBarY, L.contentW, L.searchBarH, kPanel, 28.f);
+        renderer.rect(L.x0 + 28.f, L.searchBarY + L.searchBarH - 2.f, L.contentW - 56.f, 2.f, Color{kGreen.r, kGreen.g, kGreen.b, .35f});
+        renderer.roundedRect(L.x0 + 22.f, L.searchBarY + L.searchBarH * .5f - 9.f, 18.f, 18.f, kGreen, 9.f);
         const std::string placeholder = storeSearchQuery.empty() ? "Buscar jogos..." : storeSearchQuery;
-        smoothText(placeholder.c_str(), L.x0 + 46.f, L.searchBarY + L.searchBarH * .5f - 9.f, 2.6f,
+        smoothText(placeholder.c_str(), L.x0 + 54.f, L.searchBarY + L.searchBarH * .5f - 9.f, 2.6f,
                    storeSearchQuery.empty() ? kMuted : kText);
         const char* searchHint = "TOQUE PARA BUSCAR";
-        smoothText(searchHint, L.x0 + L.contentW - smoothTextWidth(searchHint, 1.8f) - 16.f,
+        smoothText(searchHint, L.x0 + L.contentW - smoothTextWidth(searchHint, 1.8f) - 28.f,
                    L.searchBarY + L.searchBarH * .5f - 7.f, 1.8f, kGreen);
 
         if (loading) {
@@ -1885,7 +1899,7 @@ struct AppState {
                 const float cardX = L.x0 + col * (L.cardW + L.gap);
                 const float cardY = L.gridY + row * (L.cardH + L.gap);
                 const Color shade{kPanel2.r, kPanel2.g, kPanel2.b, 0.5f + 0.3f * pulse};
-                renderer.roundedRect(cardX, cardY, L.cardW, L.cardH, shade, 16.f);
+                renderer.roundedRect(cardX, cardY, L.cardW, L.cardH, shade, 18.f);
             }
             return;
         }
@@ -1930,29 +1944,37 @@ struct AppState {
             const float cardX = L.x0 + col * (L.cardW + L.gap);
             const float cardY = L.gridY + row * (L.cardH + L.gap);
             const Color& accent = accents[i % 5];
-            const float coverH = L.cardH * .68f;
+            const float coverH = L.cardH - 64.f;
+            const float pad = 8.f;
 
-            renderer.roundedRect(cardX, cardY, L.cardW, L.cardH, kPanel, 16.f);
+            // Sombra suave + card com borda fina destacando a capa.
+            renderer.roundedRect(cardX + 3.f, cardY + 6.f, L.cardW, L.cardH, Color{0.f, 0.f, 0.f, .35f}, 18.f);
+            renderer.roundedRect(cardX, cardY, L.cardW, L.cardH, kPanel2, 18.f);
+            renderer.roundedRect(cardX + 1.f, cardY + 1.f, L.cardW - 2.f, L.cardH - 2.f, kPanel, 17.f);
+            const float imgX = cardX + pad;
+            const float imgY = cardY + pad;
+            const float imgW = L.cardW - pad * 2.f;
+            const float imgH = coverH - pad;
             const GLuint cover = coverTexture(game.cover);
             if (cover != 0) {
-                renderer.texturedRect(cardX, cardY, L.cardW, coverH, cover);
+                renderer.texturedRect(imgX, imgY, imgW, imgH, cover);
             } else {
                 const Color coverColor{accent.r * .18f, accent.g * .18f, accent.b * .18f, 1.f};
-                renderer.roundedRectCorners(cardX, cardY, L.cardW, coverH, coverColor, 16.f, 16.f, 0.f, 0.f);
+                renderer.roundedRect(imgX, imgY, imgW, imgH, coverColor, 12.f);
                 const std::string initial = game.title.empty() ? "?" : game.title.substr(0, 1);
-                const float scale = 5.4f;
+                const float scale = 7.f;
                 const float iw = smoothTextWidth(initial.c_str(), scale);
-                smoothText(initial.c_str(), cardX + (L.cardW - iw) * .5f, cardY + coverH * .5f - 24.f,
+                smoothText(initial.c_str(), imgX + (imgW - iw) * .5f, imgY + imgH * .5f - 30.f,
                            scale, accent);
-                renderer.rect(cardX, cardY, L.cardW, 3.f, accent);
             }
+            renderer.rect(imgX, imgY + imgH + 6.f, imgW * .28f, 3.f, accent);
 
             std::string title = game.title.empty() ? "Sem titulo" : game.title;
-            while (title.size() > 4 && smoothTextWidth(title.c_str(), 2.0f) > L.cardW - 20.f) {
+            while (title.size() > 4 && smoothTextWidth((title + "...").c_str(), 2.2f) > L.cardW - 24.f) {
                 title.pop_back();
             }
             if (title != game.title) title += "...";
-            smoothText(title.c_str(), cardX + 12.f, cardY + coverH + 14.f, 2.0f, kText);
+            smoothText(title.c_str(), cardX + 12.f, cardY + coverH + 20.f, 2.2f, kText);
         }
 
         if (static_cast<int>(games.size()) > visibleCount) {
