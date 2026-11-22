@@ -63,6 +63,7 @@ public class XenonActivity extends NativeActivity {
     private String pendingDownloadTitle;
     private String pendingDownloadHash;
     private String pendingDownloadGameId;
+    private String pendingDownloadCoverUrl;
 
     static {
         // NativeActivity abre a biblioteca com dlopen, o que não registra os
@@ -617,7 +618,7 @@ public class XenonActivity extends NativeActivity {
     }
 
     /** Enfileira o arquivo escolhido pela Xenon Store para download em segundo plano. */
-    public void downloadStoreGame(String url, String title, String sha256, String gameId) {
+    public void downloadStoreGame(String url, String title, String sha256, String gameId, String coverUrl) {
         if (url == null || url.trim().isEmpty()) {
             showStoreToast("Link de download indisponível");
             return;
@@ -626,6 +627,7 @@ public class XenonActivity extends NativeActivity {
         pendingDownloadTitle = title == null ? "jogo" : title;
         pendingDownloadHash = sha256;
         pendingDownloadGameId = gameId == null ? "" : gameId;
+        pendingDownloadCoverUrl = coverUrl;
         runOnUiThread(() -> {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
                     && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
@@ -651,7 +653,8 @@ public class XenonActivity extends NativeActivity {
                 .putExtra(XenonDownloadService.EXTRA_URL, pendingDownloadUrl)
                 .putExtra(XenonDownloadService.EXTRA_TITLE, pendingDownloadTitle)
                 .putExtra(XenonDownloadService.EXTRA_SHA256, pendingDownloadHash)
-                .putExtra(XenonDownloadService.EXTRA_GAME_ID, pendingDownloadGameId);
+                .putExtra(XenonDownloadService.EXTRA_GAME_ID, pendingDownloadGameId)
+                .putExtra(XenonDownloadService.EXTRA_COVER_URL, pendingDownloadCoverUrl);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent);
         else startService(intent);
         showStoreToast("Download iniciado: " + pendingDownloadTitle);
@@ -659,6 +662,7 @@ public class XenonActivity extends NativeActivity {
         pendingDownloadTitle = null;
         pendingDownloadHash = null;
         pendingDownloadGameId = null;
+        pendingDownloadCoverUrl = null;
     }
 
     private void showStoreToast(String message) {

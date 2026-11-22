@@ -23,6 +23,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -43,6 +45,7 @@ public final class XenonDownloadService extends Service {
     static final String EXTRA_TITLE = "title";
     static final String EXTRA_SHA256 = "sha256";
     static final String EXTRA_GAME_ID = "game_id";
+    static final String EXTRA_COVER_URL = "cover_url";
     private static final String EXTRA_ID = "download_id";
     private static final String CHANNEL_ID = "xenon_downloads";
     private static final String PREFS = "xenon_downloads";
@@ -66,6 +69,7 @@ public final class XenonDownloadService extends Service {
         String title;
         String sha256;
         String gameId;
+        String coverUrl;
         String fileName = "";
         String contentType = "";
         String state = STATE_QUEUED;
@@ -122,6 +126,7 @@ public final class XenonDownloadService extends Service {
         if (title == null || title.trim().isEmpty()) title = "jogo";
         String sha256 = intent.getStringExtra(EXTRA_SHA256);
         String gameId = intent.getStringExtra(EXTRA_GAME_ID);
+        String coverUrl = intent.getStringExtra(EXTRA_COVER_URL);
         String id = UUID.nameUUIDFromBytes((url + "\n" + title).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
         Download job;
         synchronized (jobsLock) {
@@ -137,6 +142,7 @@ public final class XenonDownloadService extends Service {
             job.title = title;
             job.sha256 = sha256 == null ? "" : sha256.trim();
             job.gameId = gameId == null ? "" : gameId;
+            job.coverUrl = coverUrl == null ? "" : coverUrl;
             job.paused = false;
             job.cancelled = false;
             if (!job.active) job.state = STATE_QUEUED;
@@ -249,8 +255,10 @@ public final class XenonDownloadService extends Service {
                 job.downloaded = 0;
                 throw new IOException("A validação SHA-256 falhou; tente baixar novamente");
             }
-                int extracted = XenonActivity.prepareDownloadedGame(partial, gamesDir, job.fileName,
+                    Map<String, String> existingIsos = isoSnapshot(gamesDir);
+                    int extracted = XenonActivity.prepareDownloadedGame(partial, gamesDir, job.fileName,
                     job.contentType, () -> job.cancelled);
+                    if (!job.cancelled) saveCoverForNewIsos(job, gamesDir, existingIsos);
             Log.i(TAG, "Download validado para " + job.title + " (" + extracted + " ISO(s))");
             synchronized (jobsLock) {
                 jobs.remove(job.id);
@@ -360,6 +368,62 @@ public final class XenonDownloadService extends Service {
         }
     }
 
+    private Map<String, String> isoSnapshot(File gamesDir) {
+        Map<String, String> snapshot = new HashMap<>();
+        File[] files = gamesDir.listFiles();
+        if (files == null) return snapshot;
+        for (File file : files) {
+            if (file.isFile() && file.getName().toLowerCase(Locale.ROOT).endsWith(".iso")) {
+                snapshot.put(file.getName(), file.length() + ":" + file.lastModified());
+            }
+        }
+        return snapshot;
+    }
+
+    private void saveCoverForNewIsos(Download job, File gamesDir, Map<String, String> existingIsos) {
+        if (job.coverUrl.isEmpty() || job.cancelled) return;
+        File temporary = new File(gamesDir, ".xenon-cover-" + job.id + ".part");
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(job.coverUrl).openConnection();
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(15000);
+            connection.setRequestProperty("Accept", "image/*");
+            connection.setRequestProperty("User-Agent", "Xenon-Emulator/1.0");
+            int status = connection.getResponseCode();
+            if (status < 200 || status >= 300) throw new IOException("HTTP " + status);
+            long total = 0;
+            try (InputStream input = new BufferedInputStream(connection.getInputStream());
+                 BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(temporary))) {
+                byte[] buffer = new byte[16 * 1024];
+                int count;
+                while ((count = input.read(buffer)) != -1) {
+                    if (job.cancelled) return;
+                    total += count;
+                    if (total > 8L * 1024 * 1024) throw new IOException("Capa excede 8 MiB");
+                    output.write(buffer, 0, count);
+                }
+            }
+            if (total == 0) return;
+            File[] files = gamesDir.listFiles();
+            if (files == null) return;
+            for (File iso : files) {
+                if (!iso.isFile() || !iso.getName().toLowerCase(Locale.ROOT).endsWith(".iso")) continue;
+                String previous = existingIsos.get(iso.getName());
+                String current = iso.length() + ":" + iso.lastModified();
+                if (current.equals(previous)) continue;
+                if (job.cancelled) return;
+                Files.copy(temporary.toPath(), new File(gamesDir, iso.getName() + ".cover").toPath(),
+                        StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (Exception error) {
+            Log.w(TAG, "Não foi possível salvar a capa de " + job.title, error);
+        } finally {
+            if (connection != null) connection.disconnect();
+            temporary.delete();
+        }
+    }
+
     private long contentRangeStart(String value) throws IOException {
         try {
             if (value == null || !value.startsWith("bytes ")) throw new NumberFormatException();
@@ -433,6 +497,7 @@ public final class XenonDownloadService extends Service {
                 job.title = item.optString("title", "jogo");
                 job.sha256 = item.optString("sha256", "");
                 job.gameId = item.optString("gameId", "");
+                job.coverUrl = item.optString("coverUrl", "");
                 job.fileName = item.optString("fileName", "");
                 job.contentType = item.optString("contentType", "");
                 job.state = item.optString("state", STATE_QUEUED);
@@ -454,6 +519,7 @@ public final class XenonDownloadService extends Service {
                 item.put("title", job.title);
                 item.put("sha256", job.sha256);
                 item.put("gameId", job.gameId);
+                item.put("coverUrl", job.coverUrl);
                 item.put("fileName", job.fileName);
                 item.put("contentType", job.contentType);
                 item.put("state", job.state);

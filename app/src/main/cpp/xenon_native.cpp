@@ -27,6 +27,7 @@
 #include <dirent.h>
 #include <ctime>
 #include <exception>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <sys/types.h>
@@ -1388,6 +1389,12 @@ struct StoreLayout {
     int columns = 4, rows = 2, maxVisible = 8;
 };
 
+struct LibraryLayout {
+    float x0 = 0.f, y0 = 0.f, contentW = 0.f;
+    float gridY = 0.f, cardW = 0.f, cardH = 0.f, gap = 16.f;
+    int columns = 1, rows = 1, maxVisible = 1;
+};
+
 struct AppState {
     Renderer renderer;
     SplashVideo splashVideo;
@@ -1426,6 +1433,10 @@ struct AppState {
     std::chrono::steady_clock::time_point detailOpenedAt;
     bool detailAnimationStarted = false;
     std::unordered_map<std::string, StoreDownloadProgress> storeDownloads;
+    std::vector<std::string> libraryGames;
+    size_t librarySelection = 0;
+    std::chrono::steady_clock::time_point libraryScannedAt;
+    std::string libraryStatus;
 
     void initializeRenderer() {
         logoTexture = 0;
@@ -1521,7 +1532,23 @@ struct AppState {
             DecodedTexture result;
             result.url = url;
             std::vector<uint8_t> bytes;
-            if (httpGetBytes(act, url, bytes)) {
+            bool loaded = false;
+            if (url.rfind("file://", 0) == 0) {
+                std::ifstream input(url.substr(7), std::ios::binary);
+                if (input) {
+                    input.seekg(0, std::ios::end);
+                    const std::streamoff length = input.tellg();
+                    if (length > 0 && length <= 8 * 1024 * 1024) {
+                        bytes.resize(static_cast<size_t>(length));
+                        input.seekg(0, std::ios::beg);
+                        input.read(reinterpret_cast<char*>(bytes.data()), length);
+                        loaded = input.gcount() == length;
+                    }
+                }
+            } else {
+                loaded = httpGetBytes(act, url, bytes);
+            }
+            if (loaded) {
                 int w = 0, h = 0;
                 std::vector<uint8_t> rgba;
                 if (decodeImageBytes(act, bytes, rgba, w, h)) {
@@ -1601,24 +1628,27 @@ struct AppState {
     }
 
     void downloadStoreGame(const std::string& url, const std::string& title,
-                           const std::string& sha256, const std::string& gameId) {
+                           const std::string& sha256, const std::string& gameId,
+                           const std::string& coverUrl) {
         if (url.empty() || !activity || !activity->vm || !activity->clazz) return;
         JNIEnv* env = nullptr;
         bool attached = false;
         if (!attachJniEnv(activity, env, attached)) return;
         jclass activityClass = env->GetObjectClass(activity->clazz);
         jmethodID downloadMethod = activityClass
-            ? env->GetMethodID(activityClass, "downloadStoreGame", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V") : nullptr;
+            ? env->GetMethodID(activityClass, "downloadStoreGame", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V") : nullptr;
         if (downloadMethod) {
             jstring jurl = env->NewStringUTF(url.c_str());
             jstring jtitle = env->NewStringUTF(title.c_str());
             jstring jhash = env->NewStringUTF(sha256.c_str());
             jstring jgameId = env->NewStringUTF(gameId.c_str());
-            env->CallVoidMethod(activity->clazz, downloadMethod, jurl, jtitle, jhash, jgameId);
+            jstring jcoverUrl = env->NewStringUTF(coverUrl.c_str());
+            env->CallVoidMethod(activity->clazz, downloadMethod, jurl, jtitle, jhash, jgameId, jcoverUrl);
             env->DeleteLocalRef(jurl);
             env->DeleteLocalRef(jtitle);
             env->DeleteLocalRef(jhash);
             env->DeleteLocalRef(jgameId);
+            env->DeleteLocalRef(jcoverUrl);
         }
         if (activityClass) env->DeleteLocalRef(activityClass);
         if (attached) activity->vm->DetachCurrentThread();
@@ -2211,49 +2241,128 @@ struct AppState {
         }
     }
 
-    void drawLibrary() {
-        float w = static_cast<float>(renderer.width);
-        float h = static_cast<float>(renderer.height);
-        const float x0 = kSidebarW + 28.f;
-        const float y0 = kTopBarH + 28.f;
-        const float contentW = w - kSidebarW - 56.f;
-        smoothText("MEUS JOGOS", x0, y0, 7.f, kText);
-        smoothText("Sua colecao de jogos", x0, y0 + 30.f, 3.2f, kMuted);
-        float cardY = y0 + 46.f;
-        renderer.roundedRect(x0, cardY, contentW, h - cardY - 24.f, kPanel);
-        std::vector<std::string> downloadedIsos;
+    LibraryLayout computeLibraryLayout() const {
+        LibraryLayout layout;
+        const float width = static_cast<float>(renderer.width);
+        const float height = static_cast<float>(renderer.height);
+        layout.x0 = kSidebarW + 24.f;
+        layout.y0 = kTopBarH + 20.f;
+        layout.contentW = std::max(160.f, width - kSidebarW - 48.f);
+        layout.gridY = layout.y0 + 72.f;
+        const float availableHeight = std::max(120.f, height - layout.gridY - 34.f);
+        layout.columns = std::max(1, std::min(5,
+                static_cast<int>((layout.contentW + layout.gap) / 176.f)));
+        layout.cardW = (layout.contentW - layout.gap * (layout.columns - 1))
+                / static_cast<float>(layout.columns);
+        layout.cardH = std::min(220.f, availableHeight);
+        layout.rows = std::max(1, static_cast<int>((availableHeight + layout.gap)
+                / (layout.cardH + layout.gap)));
+        layout.maxVisible = layout.columns * layout.rows;
+        return layout;
+    }
+
+    void refreshLibraryGames() {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - libraryScannedAt < std::chrono::seconds(1)) return;
+        libraryScannedAt = now;
+        std::vector<std::string> found;
         const std::string gamesPath = profileStoragePath + "/games";
         if (DIR* directory = opendir(gamesPath.c_str())) {
             while (dirent* entry = readdir(directory)) {
-                const std::string name = entry->d_name;
-                if (name.size() >= 4) {
-                    std::string extension = name.substr(name.size() - 4);
-                    std::transform(extension.begin(), extension.end(), extension.begin(),
-                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-                    if (extension == ".iso") downloadedIsos.push_back(name);
-                }
+                std::string name = entry->d_name;
+                if (name.size() < 4) continue;
+                std::string extension = name.substr(name.size() - 4);
+                std::transform(extension.begin(), extension.end(), extension.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                if (extension == ".iso") found.push_back(std::move(name));
             }
             closedir(directory);
         }
-        if (!downloadedIsos.empty()) {
-            smoothText("ISOS BAIXADOS", x0 + 32.f, cardY + 28.f, 3.2f, kMuted);
-            const size_t visible = std::min<size_t>(downloadedIsos.size(), 8);
-            for (size_t i = 0; i < visible; ++i) {
-                smoothText(downloadedIsos[i].c_str(), x0 + 32.f, cardY + 60.f + static_cast<float>(i) * 28.f,
-                           3.2f, kText);
-            }
+        std::sort(found.begin(), found.end());
+        libraryGames = std::move(found);
+        if (libraryGames.empty()) librarySelection = 0;
+        else librarySelection = std::min(librarySelection, libraryGames.size() - 1);
+    }
+
+    void attemptLaunchSelectedIso() {
+        if (libraryGames.empty() || librarySelection >= libraryGames.size()) return;
+        const std::string path = profileStoragePath + "/games/" + libraryGames[librarySelection];
+        std::ifstream iso(path, std::ios::binary);
+        if (!iso) {
+            libraryStatus = "Nao foi possivel abrir o arquivo ISO.";
             return;
         }
-        renderer.roundedRect(x0 + 32.f, cardY + 46.f, 82.f, 82.f, kBg);
-        renderer.roundedRect(x0 + 55.f, cardY + 69.f, 36.f, 36.f, kGreen);
-        smoothText("X", x0 + 67.f, cardY + 80.f, 4.0f, kBg);
-        smoothText("Nenhum jogo encontrado", x0 + 138.f, cardY + 58.f, 5.0f, kText);
-        smoothText("Adicione um arquivo XEX para comecar.", x0 + 138.f,
-                   cardY + 92.f, 3.2f, kMuted);
-        renderer.roundedRect(x0 + 138.f, cardY + 128.f, 190.f, 44.f, kGreen, 22.f);
-        const char* addText = "ADICIONAR JOGO";
-        smoothText(addText, x0 + 138.f + (190.f - smoothTextWidth(addText, 3.1f)) * .5f,
-                   cardY + 141.f, 3.1f, kBg);
+        libraryStatus = "Arquivo aberto. O core ainda nao tem loader XDVDFS/XEX para executar o ISO.";
+    }
+
+    void drawLibrary() {
+        refreshLibraryGames();
+        const float height = static_cast<float>(renderer.height);
+        const LibraryLayout layout = computeLibraryLayout();
+        smoothText("MEUS JOGOS", layout.x0, layout.y0, 6.f, kText);
+        char subtitle[96];
+        std::snprintf(subtitle, sizeof(subtitle), "%zu ISO(s) no armazenamento", libraryGames.size());
+        smoothText(subtitle, layout.x0, layout.y0 + 30.f, 2.6f, kMuted);
+        const float panelY = layout.y0 + 52.f;
+        renderer.roundedRect(layout.x0, panelY, layout.contentW,
+                             std::max(80.f, height - panelY - 20.f), kPanel);
+
+        if (libraryGames.empty()) {
+            smoothText("Nenhum ISO encontrado", layout.x0 + 24.f, panelY + 42.f, 3.4f, kText);
+            smoothText("Os downloads concluidos aparecerao aqui.", layout.x0 + 24.f,
+                       panelY + 76.f, 2.4f, kMuted);
+            return;
+        }
+
+        const size_t pageStart = (librarySelection / static_cast<size_t>(layout.maxVisible))
+                * static_cast<size_t>(layout.maxVisible);
+        const size_t pageEnd = std::min(libraryGames.size(), pageStart + layout.maxVisible);
+        for (size_t index = pageStart; index < pageEnd; ++index) {
+            const size_t localIndex = index - pageStart;
+            const int column = static_cast<int>(localIndex % layout.columns);
+            const int row = static_cast<int>(localIndex / layout.columns);
+            const float x = layout.x0 + column * (layout.cardW + layout.gap);
+            const float y = layout.gridY + row * (layout.cardH + layout.gap);
+            const bool selected = index == librarySelection;
+            if (selected) {
+                renderer.roundedRect(x - 3.f, y - 3.f, layout.cardW + 6.f,
+                                     layout.cardH + 6.f, kGreen, 12.f);
+            }
+            const std::string& name = libraryGames[index];
+            const std::string coverPath = profileStoragePath + "/games/" + name + ".cover";
+            const GLuint cover = access(coverPath.c_str(), R_OK) == 0
+                    ? coverTexture("file://" + coverPath) : 0;
+            renderer.roundedRect(x, y, layout.cardW, layout.cardH, kPanel2, 10.f);
+            if (cover != 0) {
+                renderer.texturedRect(x + 4.f, y + 4.f, layout.cardW - 8.f,
+                                      layout.cardH - 8.f, cover, 1.f, 8.f);
+            } else {
+                const std::string initial = name.empty() ? "?" : name.substr(0, 1);
+                smoothText(initial.c_str(), x + layout.cardW * .42f, y + layout.cardH * .25f,
+                           std::min(7.f, layout.cardW * .045f), kGreen);
+            }
+            const float labelH = 42.f;
+            renderer.roundedRect(x + 4.f, y + layout.cardH - labelH - 4.f,
+                                 layout.cardW - 8.f, labelH, Color{0.f, 0.f, 0.f, .78f}, 7.f);
+            std::string title = name;
+            while (title.size() > 5 && smoothTextWidth((title + "...").c_str(), 2.f) > layout.cardW - 20.f) {
+                title.pop_back();
+            }
+            if (title != name) title += "...";
+            smoothText(title.c_str(), x + 10.f, y + layout.cardH - 29.f, 2.f, kText);
+        }
+
+        if (pageStart > 0 || pageEnd < libraryGames.size()) {
+            char page[64];
+            std::snprintf(page, sizeof(page), "%zu / %zu", pageStart / layout.maxVisible + 1,
+                          (libraryGames.size() + layout.maxVisible - 1) / layout.maxVisible);
+            smoothText(page, layout.x0 + layout.contentW - smoothTextWidth(page, 2.f) - 16.f,
+                       layout.y0 + 30.f, 2.f, kMuted);
+        }
+        if (!libraryStatus.empty()) {
+            const float statusY = std::min(height - 26.f, layout.gridY + layout.rows * (layout.cardH + layout.gap) + 8.f);
+            smoothText(libraryStatus.c_str(), layout.x0, statusY, 2.f, kMuted);
+        }
     }
 
     void drawAbout() {
@@ -2483,7 +2592,9 @@ struct AppState {
             const float openY = coverY + coverH - 44.f;
             if (x >= textX && x < textX + openW && y >= openY && y < openY + 44.f) {
                 GameEntry game;
-                if (catalog.findById(selectedGameId, game)) downloadStoreGame(game.link, game.title, game.sha256, game.id);
+                if (catalog.findById(selectedGameId, game)) {
+                    downloadStoreGame(game.link, game.title, game.sha256, game.id, game.cover);
+                }
                 return;
             }
 
@@ -2546,6 +2657,28 @@ struct AppState {
                         openGameDetail(games[i].id);
                         return;
                     }
+                }
+            }
+            return;
+        }
+
+        if (screen == Screen::Library) {
+            refreshLibraryGames();
+            const LibraryLayout layout = computeLibraryLayout();
+            const size_t pageStart = (librarySelection / static_cast<size_t>(layout.maxVisible))
+                    * static_cast<size_t>(layout.maxVisible);
+            const size_t pageEnd = std::min(libraryGames.size(), pageStart + layout.maxVisible);
+            for (size_t index = pageStart; index < pageEnd; ++index) {
+                const size_t localIndex = index - pageStart;
+                const int column = static_cast<int>(localIndex % layout.columns);
+                const int row = static_cast<int>(localIndex / layout.columns);
+                const float cardX = layout.x0 + column * (layout.cardW + layout.gap);
+                const float cardY = layout.gridY + row * (layout.cardH + layout.gap);
+                if (x >= cardX && x < cardX + layout.cardW &&
+                    y >= cardY && y < cardY + layout.cardH) {
+                    librarySelection = index;
+                    attemptLaunchSelectedIso();
+                    return;
                 }
             }
             return;
@@ -2640,6 +2773,61 @@ struct AppState {
         }
     }
 
+    void handleLibraryKey(int keyCode) {
+        refreshLibraryGames();
+        if (libraryGames.empty()) {
+            if (keyCode == AKEYCODE_BACK || keyCode == AKEYCODE_ESCAPE ||
+                keyCode == AKEYCODE_BUTTON_B || keyCode == AKEYCODE_BUTTON_SELECT) {
+                screen = Screen::Home;
+                focusedNavigation = static_cast<int>(Screen::Home);
+            } else if (keyCode == AKEYCODE_BUTTON_Y) {
+                libraryScannedAt = {};
+                refreshLibraryGames();
+                libraryStatus = "Biblioteca atualizada.";
+            }
+            return;
+        }
+        const LibraryLayout layout = computeLibraryLayout();
+        switch (keyCode) {
+            case AKEYCODE_DPAD_LEFT:
+                if (librarySelection > 0) --librarySelection;
+                break;
+            case AKEYCODE_DPAD_RIGHT:
+                if (librarySelection + 1 < libraryGames.size()) ++librarySelection;
+                break;
+            case AKEYCODE_DPAD_UP:
+                if (librarySelection >= static_cast<size_t>(layout.columns)) {
+                    librarySelection -= static_cast<size_t>(layout.columns);
+                }
+                break;
+            case AKEYCODE_DPAD_DOWN:
+                if (librarySelection + static_cast<size_t>(layout.columns) < libraryGames.size()) {
+                    librarySelection += static_cast<size_t>(layout.columns);
+                }
+                break;
+            case AKEYCODE_DPAD_CENTER:
+            case AKEYCODE_ENTER:
+            case AKEYCODE_BUTTON_A:
+            case AKEYCODE_BUTTON_START:
+                attemptLaunchSelectedIso();
+                break;
+            case AKEYCODE_BUTTON_Y:
+                libraryScannedAt = {};
+                refreshLibraryGames();
+                libraryStatus = "Biblioteca atualizada.";
+                break;
+            case AKEYCODE_BACK:
+            case AKEYCODE_ESCAPE:
+            case AKEYCODE_BUTTON_B:
+            case AKEYCODE_BUTTON_SELECT:
+                screen = Screen::Home;
+                focusedNavigation = static_cast<int>(Screen::Home);
+                break;
+            default:
+                break;
+        }
+    }
+
     void handleKey(int keyCode) {
         keyCode = normalizeControllerKey(keyCode);
         if (showGameDetail) {
@@ -2661,7 +2849,9 @@ struct AppState {
                 case AKEYCODE_BUTTON_A:
                 case AKEYCODE_BUTTON_START: {
                     GameEntry game;
-                    if (catalog.findById(selectedGameId, game)) downloadStoreGame(game.link, game.title, game.sha256, game.id);
+                    if (catalog.findById(selectedGameId, game)) {
+                        downloadStoreGame(game.link, game.title, game.sha256, game.id, game.cover);
+                    }
                     break;
                 }
                 default:
@@ -2675,6 +2865,10 @@ struct AppState {
         }
         if (screen == Screen::Store && storeFocus >= 0) {
             handleStoreKey(keyCode);
+            return;
+        }
+        if (screen == Screen::Library) {
+            handleLibraryKey(keyCode);
             return;
         }
         switch (keyCode) {
@@ -2787,7 +2981,7 @@ struct AppState {
 
         // Na loja (e nos detalhes do jogo) o analogico/direcional anda nas
         // duas direcoes, convertido em teclas do direcional.
-        if (showGameDetail || (screen == Screen::Store)) {
+        if (showGameDetail || screen == Screen::Store || screen == Screen::Library) {
             const float lY = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Y, 0);
             const float hY = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_Y, 0);
             const float horiz = std::abs(hatX) > .5f ? hatX : leftX;
