@@ -34,8 +34,6 @@ target_link_libraries(xenon_native
         xboxemu_memory
         native_app_glue
         android
-        mediandk
-        aaudio
         EGL
         GLESv2
         log

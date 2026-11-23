@@ -2,13 +2,9 @@
 #include <android/asset_manager.h>
 #include <android/input.h>
 #include <android/keycodes.h>
-#include <aaudio/AAudio.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <android/log.h>
-#include <media/NdkMediaCodec.h>
-#include <media/NdkMediaExtractor.h>
-#include <media/NdkMediaFormat.h>
 #include <jni.h>
 #include "Core/Filesystem/XdvdfsImage.hpp"
 #include "ProfileSelectionScreen.hpp"
@@ -897,277 +893,6 @@ void main() {
     }
 };
 
-// Plays the splash video's audio track on a background thread via AAudio.
-struct SplashAudio {
-    std::thread worker;
-    std::atomic<bool> running{false};
-
-    void start(int fd, off64_t offset, off64_t length) {
-        stop();
-        const int ownFd = dup(fd);
-        if (ownFd < 0) return;
-        running = true;
-        worker = std::thread([this, ownFd, offset, length] {
-            play(ownFd, offset, length);
-            close(ownFd);
-        });
-    }
-
-    void stop() {
-        running = false;
-        if (worker.joinable()) worker.join();
-    }
-
-    void play(int fd, off64_t offset, off64_t length) {
-        AMediaExtractor* extractor = AMediaExtractor_new();
-        AMediaCodec* codec = nullptr;
-        AAudioStream* stream = nullptr;
-        AMediaFormat* format = nullptr;
-        int32_t sampleRate = 44100;
-        int32_t channels = 2;
-
-        if (!extractor || AMediaExtractor_setDataSourceFd(extractor, fd, offset, length) != AMEDIA_OK) {
-            if (extractor) AMediaExtractor_delete(extractor);
-            return;
-        }
-        for (size_t i = 0; i < AMediaExtractor_getTrackCount(extractor); ++i) {
-            AMediaFormat* candidate = AMediaExtractor_getTrackFormat(extractor, i);
-            const char* mime = nullptr;
-            if (candidate && AMediaFormat_getString(candidate, AMEDIAFORMAT_KEY_MIME, &mime) &&
-                mime && std::strncmp(mime, "audio/", 6) == 0) {
-                AMediaExtractor_selectTrack(extractor, i);
-                format = candidate;
-                break;
-            }
-            if (candidate) AMediaFormat_delete(candidate);
-        }
-        if (!format) {
-            AMediaExtractor_delete(extractor);
-            return;
-        }
-        AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sampleRate);
-        AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &channels);
-        const char* mime = nullptr;
-        AMediaFormat_getString(format, AMEDIAFORMAT_KEY_MIME, &mime);
-        codec = mime ? AMediaCodec_createDecoderByType(mime) : nullptr;
-        bool ok = codec && AMediaCodec_configure(codec, format, nullptr, nullptr, 0) == AMEDIA_OK &&
-                  AMediaCodec_start(codec) == AMEDIA_OK;
-        AMediaFormat_delete(format);
-
-        AAudioStreamBuilder* builder = nullptr;
-        if (ok && AAudio_createStreamBuilder(&builder) == AAUDIO_OK) {
-            AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
-            AAudioStreamBuilder_setSampleRate(builder, sampleRate);
-            AAudioStreamBuilder_setChannelCount(builder, channels);
-            if (AAudioStreamBuilder_openStream(builder, &stream) != AAUDIO_OK) stream = nullptr;
-            AAudioStreamBuilder_delete(builder);
-        }
-        if (stream) AAudioStream_requestStart(stream);
-        ok = ok && stream;
-
-        bool inputEnded = false;
-        while (ok && running) {
-            if (!inputEnded) {
-                const ssize_t in = AMediaCodec_dequeueInputBuffer(codec, 5000);
-                if (in >= 0) {
-                    size_t size = 0;
-                    uint8_t* buf = AMediaCodec_getInputBuffer(codec, in, &size);
-                    const ssize_t n = buf ? AMediaExtractor_readSampleData(extractor, buf, size) : -1;
-                    if (n < 0) {
-                        AMediaCodec_queueInputBuffer(codec, in, 0, 0, 0, AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
-                        inputEnded = true;
-                    } else {
-                        AMediaCodec_queueInputBuffer(codec, in, 0, static_cast<size_t>(n),
-                                                     AMediaExtractor_getSampleTime(extractor), 0);
-                        AMediaExtractor_advance(extractor);
-                    }
-                }
-            }
-            AMediaCodecBufferInfo info{};
-            const ssize_t out = AMediaCodec_dequeueOutputBuffer(codec, &info, 10000);
-            if (out == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
-                AMediaFormat* f = AMediaCodec_getOutputFormat(codec);
-                int32_t ch = channels;
-                if (f) { AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch); AMediaFormat_delete(f); }
-                if (ch > 0) channels = ch;
-            } else if (out >= 0) {
-                size_t size = 0;
-                uint8_t* buf = AMediaCodec_getOutputBuffer(codec, out, &size);
-                if (buf && info.size > 0) {
-                    const int32_t frames = info.size / (2 * channels);
-                    AAudioStream_write(stream, buf + info.offset, frames, 1000000000LL);
-                }
-                AMediaCodec_releaseOutputBuffer(codec, out, false);
-                if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) break;
-            }
-        }
-
-        if (stream) {
-            AAudioStream_requestStop(stream);
-            AAudioStream_close(stream);
-        }
-        if (codec) {
-            AMediaCodec_stop(codec);
-            AMediaCodec_delete(codec);
-        }
-        AMediaExtractor_delete(extractor);
-    }
-};
-
-struct SplashVideo {
-    SplashAudio audio;
-    std::chrono::steady_clock::time_point playbackStart;
-    bool clockStarted = false;
-    ssize_t pendingOutput = -1;
-    AMediaCodecBufferInfo pendingInfo{};
-    AMediaExtractor* extractor = nullptr;
-    AMediaCodec* codec = nullptr;
-    int fileDescriptor = -1;
-    bool codecStarted = false;
-    bool inputEnded = false;
-
-    void stop() {
-        audio.stop();
-        pendingOutput = -1;
-        clockStarted = false;
-        if (codec) {
-            if (codecStarted) AMediaCodec_stop(codec);
-            AMediaCodec_delete(codec);
-            codec = nullptr;
-        }
-        codecStarted = false;
-        if (extractor) {
-            AMediaExtractor_delete(extractor);
-            extractor = nullptr;
-        }
-        if (fileDescriptor >= 0) {
-            close(fileDescriptor);
-            fileDescriptor = -1;
-        }
-        inputEnded = false;
-    }
-
-    bool start(AAssetManager* assets, ANativeWindow* window) {
-        stop();
-        if (!assets || !window) {
-            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Splash video requires an asset manager and window");
-            return false;
-        }
-
-        AAsset* asset = AAssetManager_open(assets, "video splash.mp4", AASSET_MODE_RANDOM);
-        if (!asset) {
-            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Splash video asset not found");
-            return false;
-        }
-
-        off64_t offset = 0;
-        off64_t length = 0;
-        fileDescriptor = AAsset_openFileDescriptor64(asset, &offset, &length);
-        AAsset_close(asset);
-        if (fileDescriptor < 0) {
-            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to open splash video asset descriptor");
-            return false;
-        }
-
-        extractor = AMediaExtractor_new();
-        if (!extractor ||
-            AMediaExtractor_setDataSourceFd(extractor, fileDescriptor, offset, length) != AMEDIA_OK) {
-            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to read splash video");
-            stop();
-            return false;
-        }
-
-        audio.start(fileDescriptor, offset, length);
-
-        int videoTrack = -1;
-        AMediaFormat* format = nullptr;
-        for (size_t i = 0; i < AMediaExtractor_getTrackCount(extractor); ++i) {
-            AMediaFormat* candidate = AMediaExtractor_getTrackFormat(extractor, i);
-            const char* mime = nullptr;
-            if (candidate && AMediaFormat_getString(candidate, AMEDIAFORMAT_KEY_MIME, &mime) &&
-                mime && std::strncmp(mime, "video/", 6) == 0) {
-                videoTrack = static_cast<int>(i);
-                format = candidate;
-                break;
-            }
-            if (candidate) AMediaFormat_delete(candidate);
-        }
-
-        if (videoTrack < 0 || !format) {
-            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Splash video has no video track");
-            stop();
-            return false;
-        }
-
-        const char* mime = nullptr;
-        AMediaFormat_getString(format, AMEDIAFORMAT_KEY_MIME, &mime);
-        codec = mime ? AMediaCodec_createDecoderByType(mime) : nullptr;
-        const bool configured = codec &&
-            AMediaExtractor_selectTrack(extractor, static_cast<size_t>(videoTrack)) == AMEDIA_OK &&
-            AMediaCodec_configure(codec, format, window, nullptr, 0) == AMEDIA_OK;
-        AMediaFormat_delete(format);
-        if (!configured || AMediaCodec_start(codec) != AMEDIA_OK) {
-            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Unable to initialize splash video decoder");
-            stop();
-            return false;
-        }
-
-        codecStarted = true;
-        return true;
-    }
-
-    bool renderFrame() {
-        if (!codec || !extractor) return false;
-
-        if (!inputEnded) {
-            const ssize_t inputIndex = AMediaCodec_dequeueInputBuffer(codec, 0);
-            if (inputIndex >= 0) {
-                size_t bufferSize = 0;
-                uint8_t* buffer = AMediaCodec_getInputBuffer(codec, inputIndex, &bufferSize);
-                const ssize_t sampleSize = buffer
-                    ? AMediaExtractor_readSampleData(extractor, buffer, bufferSize)
-                    : -1;
-                if (sampleSize < 0) {
-                    AMediaCodec_queueInputBuffer(codec, inputIndex, 0, 0, 0,
-                                                 AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
-                    inputEnded = true;
-                } else {
-                    const int64_t presentationTime = AMediaExtractor_getSampleTime(extractor);
-                    AMediaCodec_queueInputBuffer(codec, inputIndex, 0,
-                                                 static_cast<size_t>(sampleSize),
-                                                 presentationTime, 0);
-                    AMediaExtractor_advance(extractor);
-                }
-            }
-        }
-
-        if (pendingOutput < 0) {
-            pendingOutput = AMediaCodec_dequeueOutputBuffer(codec, &pendingInfo, 0);
-            if (pendingOutput < 0) return true;
-        }
-        // Show each frame at its timestamp so the picture stays in sync with the audio.
-        const auto now = std::chrono::steady_clock::now();
-        if (!clockStarted) {
-            playbackStart = now - std::chrono::microseconds(pendingInfo.presentationTimeUs);
-            clockStarted = true;
-        }
-        const auto due = playbackStart + std::chrono::microseconds(pendingInfo.presentationTimeUs);
-        if (now < due) return true;
-        {
-            const ssize_t outputIndex = pendingOutput;
-            const AMediaCodecBufferInfo info = pendingInfo;
-            pendingOutput = -1;
-            const bool ended = (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0;
-            AMediaCodec_releaseOutputBuffer(codec, outputIndex, info.size > 0);
-            if (ended) {
-                stop();
-                return false;
-            }
-        }
-        return true;
-    }
-};
-
 // Cria uma textura GLES2 RGBA8 a partir de pixels já decodificados.
 GLuint createTextureFromRGBA(const uint8_t* pixels, int texWidth, int texHeight) {
     GLuint texture = 0;
@@ -1400,13 +1125,11 @@ struct LibraryLayout {
 
 struct AppState {
     Renderer renderer;
-    SplashVideo splashVideo;
     xenon::ProfileSelectionScreen profileSelection;
     Screen screen = Screen::ProfileSelect;
     bool initialized = false;
     bool rendererInitialized = false;
     bool showingSplash = true;
-    bool playingSplashVideo = false;
     ANativeWindow* window = nullptr;
     ANativeActivity* activity = nullptr;
     AAssetManager* assetManager = nullptr;
@@ -1677,12 +1400,6 @@ struct AppState {
         profileSelection.shutdown();
         renderer.shutdown();
         rendererInitialized = false;
-        if (showingSplash && splashVideo.start(assetManager, window)) {
-            playingSplashVideo = true;
-            return;
-        }
-
-        playingSplashVideo = false;
         initializeRenderer();
     }
 
@@ -2459,7 +2176,8 @@ struct AppState {
     void drawSplash() {
         auto elapsed = std::chrono::duration<float>(
             std::chrono::steady_clock::now() - splashStarted).count();
-        if (elapsed >= 2.7f) {
+        constexpr float duration = 3.4f;
+        if (elapsed >= duration) {
             showingSplash = false;
             beginProfileSelection();
             return;
@@ -2468,28 +2186,69 @@ struct AppState {
         float w = static_cast<float>(renderer.width);
         float h = static_cast<float>(renderer.height);
         float cx = w * .5f;
+        const float cy = h * .39f;
+        const float progress = std::clamp(elapsed / duration, 0.f, 1.f);
+        const float pulse = .5f + .5f * std::sin(elapsed * 4.f);
+        const Color grid{0.047f, 0.061f, 0.055f, 1.f};
+        const Color frame{0.12f, 0.19f, 0.15f, 1.f};
+        const Color glow{0.09f + pulse * .04f, 0.30f + pulse * .09f, 0.16f + pulse * .04f, 1.f};
 
-        for (int i = 0; i < 3; ++i) {
-            float inset = 54.f - i * 16.f;
-            renderer.roundedRect(cx - 110.f + inset * .28f, h * .34f - 38.f + i * 14.f,
-                                 220.f - inset * .56f, 5.f,
-                                 i == 1 ? kGreen : kPanel2);
+        for (int x = 40; x < static_cast<int>(w); x += 80) {
+            renderer.rect(static_cast<float>(x), 0.f, 1.f, h, grid);
+        }
+        for (int y = 40; y < static_cast<int>(h); y += 80) {
+            renderer.rect(0.f, static_cast<float>(y), w, 1.f, grid);
         }
 
-        const float logoY = h * .38f;
-        renderer.roundedRect(cx - 64.f, logoY - 64.f, 128.f, 128.f, kPanel);
-        renderer.roundedRect(cx - 48.f, logoY - 48.f, 96.f, 96.f, kPanel2);
-        renderer.rotatedRect(cx, logoY, 76.f, 13.f, 0.785398f, kGreen);
-        renderer.rotatedRect(cx, logoY, 76.f, 13.f, -0.785398f, kGreen);
-        renderer.rotatedRect(cx, logoY, 14.f, 14.f, 0.785398f, kText);
+        const float margin = 48.f;
+        const float frameW = w - margin * 2.f;
+        const float frameH = h - margin * 2.f;
+        const float corner = 54.f;
+        renderer.rect(margin, margin, corner, 2.f, frame);
+        renderer.rect(margin, margin, 2.f, corner, frame);
+        renderer.rect(w - margin - corner, margin, corner, 2.f, frame);
+        renderer.rect(w - margin - 2.f, margin, 2.f, corner, frame);
+        renderer.rect(margin, h - margin - 2.f, corner, 2.f, frame);
+        renderer.rect(margin, h - margin - corner, 2.f, corner, frame);
+        renderer.rect(w - margin - corner, h - margin - 2.f, corner, 2.f, frame);
+        renderer.rect(w - margin - 2.f, h - margin - corner, 2.f, corner, frame);
+        renderer.rect(cx - 230.f, margin, 460.f, 2.f, frame);
+        renderer.rect(cx - 230.f, h - margin - 2.f, 460.f, 2.f, frame);
 
-        renderer.text("XENON", cx - 58.f, h * .58f, 8, kText);
-        renderer.text("EXPERIMENTAL EMULATOR", cx - 108.f, h * .58f + 58.f, 3, kMuted);
+        const float scanY = margin + std::fmod(elapsed * 210.f, frameH);
+        renderer.rect(margin + 4.f, scanY, frameW - 8.f, 1.f, grid);
+        for (int i = 0; i < 18; ++i) {
+            const float drift = elapsed * (18.f + (i % 4) * 7.f);
+            const float x = 86.f + std::fmod(i * 71.f + drift, w - 172.f);
+            const float y = 92.f + std::fmod(i * 43.f + drift * .55f, h - 184.f);
+            renderer.roundedRect(x, y, i % 3 == 0 ? 3.f : 2.f, 2.f,
+                                 i % 3 == 0 ? frame : grid, 1.f);
+        }
 
-        float barW = w * .55f;
-        float progress = std::clamp(elapsed / 2.7f, 0.f, 1.f);
-        renderer.roundedRect(cx - barW * .5f, h * .78f, barW, 6.f, kPanel2);
-        renderer.roundedRect(cx - barW * .5f, h * .78f, barW * progress, 6.f, kGreen);
+        const float emblemSize = 164.f + pulse * 8.f;
+        renderer.rotatedRect(cx, cy, emblemSize, emblemSize, 0.785398f, grid);
+        renderer.rotatedRect(cx, cy, 132.f, 132.f, 0.785398f, frame);
+        renderer.rotatedRect(cx, cy, 112.f, 112.f, 0.785398f, kBg);
+        renderer.rotatedRect(cx, cy, 112.f, 18.f, 0.785398f, glow);
+        renderer.rotatedRect(cx, cy, 112.f, 18.f, -0.785398f, glow);
+        renderer.rotatedRect(cx, cy, 82.f, 8.f, 0.785398f, kGreen);
+        renderer.rotatedRect(cx, cy, 82.f, 8.f, -0.785398f, kGreen);
+        renderer.roundedRect(cx - 5.f, cy - 5.f, 10.f, 10.f, kText, 5.f);
+
+        constexpr float titleScale = 11.f;
+        renderer.text("XENON", cx - 15.f * titleScale, h * .62f, titleScale, kText);
+        renderer.text("EXPERIMENTAL EMULATOR", cx - 63.f * 3.f, h * .70f, 3.f, kMuted);
+        renderer.text("SYSTEM BOOT", margin + 18.f, margin + 22.f, 3.f, kMuted);
+        renderer.text("XENON CORE // 01", w - margin - 18.f - 48.f * 3.f,
+                      margin + 22.f, 3.f, kGreen);
+
+        constexpr float barW = 420.f;
+        const float barX = cx - barW * .5f;
+        const float barY = h * .84f;
+        renderer.roundedRect(barX, barY, barW, 5.f, frame, 2.f);
+        renderer.roundedRect(barX, barY, barW * progress, 5.f, kGreen, 2.f);
+        renderer.text("INITIALIZING", barX, barY + 18.f, 2.f, kMuted);
+        renderer.text("BOOTING", barX + barW - 42.f, barY + 18.f, 2.f, kGreen);
     }
 
     void drawProfileSelect() {
@@ -2611,14 +2370,6 @@ struct AppState {
     }
 
     void draw() {
-        if (playingSplashVideo) {
-            if (!splashVideo.renderFrame()) {
-                playingSplashVideo = false;
-                showingSplash = false;
-                initializeRenderer();
-            }
-            return;
-        }
         if (!rendererInitialized) return;
 
         renderer.begin();
@@ -3149,8 +2900,6 @@ void onAppCmd(android_app* app, int32_t cmd) {
             break;
         case APP_CMD_TERM_WINDOW:
             if (state) {
-                state->splashVideo.stop();
-                state->playingSplashVideo = false;
                 state->profileSelection.shutdown();
                 state->renderer.shutdown();
                 state->rendererInitialized = false;
