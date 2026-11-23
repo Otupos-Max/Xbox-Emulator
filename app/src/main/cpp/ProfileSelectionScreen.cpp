@@ -223,16 +223,24 @@ void drawSilhouette(const ProfileDrawApi& api, float cx, float top, float areaH,
 }
 
 void drawCreateProfileIcon(const ProfileDrawApi& api, float cx, float top, float areaH) {
-    const float radius = std::min(areaH * .25f, 35.f);
-    const float cy = top + areaH * .45f;
-    drawCircle(api, cx, cy, radius + 3.f, {0.25f, 0.27f, 0.29f, .32f});
-    drawCircle(api, cx, cy, radius, {0.36f, 0.38f, 0.41f, .95f});
-    drawSilhouette(api, cx, top + areaH * .22f, areaH * .56f,
-                   {0.86f, 0.87f, 0.89f, 1.f});
-    drawRect(api, cx + radius * .34f, cy + radius * .12f, radius * .95f,
-             radius * .20f, kWhite);
-    drawRect(api, cx + radius * .72f, cy - radius * .26f, radius * .20f,
-             radius * .95f, kWhite);
+    // Avatar disc with a small person inside and a green "+" badge.
+    const float radius = areaH * .30f;
+    const float cy = top + areaH * .50f;
+    drawCircle(api, cx, cy, radius + 3.f, {1.f, 1.f, 1.f, .06f});
+    drawCircle(api, cx, cy, radius, {0.20f, 0.24f, 0.22f, 1.f});
+    const Color person{0.80f, 0.84f, 0.81f, .75f};
+    const float headR = radius * .28f;
+    drawCircle(api, cx, cy - radius * .22f, headR, person);
+    const float bodyW = radius * .95f;
+    const float bodyTop = cy + radius * .16f;
+    drawRoundedRect(api, cx - bodyW * .5f, bodyTop, bodyW, radius * .42f, radius * .21f, person);
+    const float bx = cx + radius * .72f;
+    const float by = cy + radius * .72f;
+    const float br = radius * .30f;
+    drawCircle(api, bx, by, br + 2.f, {0.07f, 0.10f, 0.085f, 1.f});
+    drawCircle(api, bx, by, br, {0.212f, 0.871f, 0.408f, 1.f});
+    drawRect(api, bx - br * .55f, by - br * .12f, br * 1.1f, br * .24f, kWhite);
+    drawRect(api, bx - br * .12f, by - br * .55f, br * .24f, br * 1.1f, kWhite);
 }
 
 uint32_t nextCodepoint(const char*& text) {
