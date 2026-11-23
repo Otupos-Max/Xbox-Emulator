@@ -43,7 +43,7 @@ Os itens abaixo NÃO fazem parte do escopo do projeto e não serão implementado
 - Distribuição de jogos, firmware, BIOS ou qualquer arquivo protegido.
 - Compatibilidade com Xbox original (primeira geração).
 - Compatibilidade com Xbox One / Series X|S.
-- Portes para plataformas que não sejam Android/ARM64 no escopo inicial
+- Portes para plataformas que não sejam Android/ARM32 ou ARM64 no escopo inicial
   (x86-64 desktop pode ser considerado futuramente como plataforma de testes).
 
 
@@ -511,9 +511,13 @@ Compilar em uma máquina Android configurada:
 
   export ANDROID_HOME=/caminho/para/android-sdk
   export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.3.11579264
-  ./gradlew assembleDebug
+  ./gradlew assembleMobileDebug assembleTvDebug
 
-O APK será gerado em app/build/outputs/apk/debug/app-debug.apk.
+O Xenon Mobile (ARM64) será gerado em
+app/build/outputs/apk/mobile/debug/Xenon-Mobile.apk. O Xenon TV (ARM32) será
+gerado em app/build/outputs/apk/tv/debug/Xenon-TV.apk. Ambos usam o mesmo
+código compartilhado; o manifesto TV adiciona a categoria Android TV sem
+alterar o launcher Mobile.
 
 O GitHub Actions também gera o APK automaticamente em pushes e pull requests
 para `main`/`master`, além de permitir uma execução manual pela opção
