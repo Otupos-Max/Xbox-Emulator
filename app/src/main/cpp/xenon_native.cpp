@@ -8,6 +8,7 @@
 #include <jni.h>
 #include "Core/Filesystem/XdvdfsImage.hpp"
 #include "ProfileSelectionScreen.hpp"
+#include "SplashScreen.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1126,6 +1127,8 @@ struct LibraryLayout {
 struct AppState {
     Renderer renderer;
     xenon::ProfileSelectionScreen profileSelection;
+    xenon::SplashScreen splash;
+    float splashOutroStart = -1.f;
     Screen screen = Screen::ProfileSelect;
     bool initialized = false;
     bool rendererInitialized = false;
@@ -1179,6 +1182,9 @@ struct AppState {
         if (!profileSelection.initialize(assetManager, profileStoragePath)) {
             __android_log_print(ANDROID_LOG_ERROR, "Xenon",
                                 "Profile selection initialization failed; check model assets and GLES support");
+        }
+        if (!splash.initialize()) {
+            __android_log_print(ANDROID_LOG_ERROR, "Xenon", "Splash shader unavailable; using fallback splash");
         }
         profileSelectionStarted = std::chrono::steady_clock::now();
     }
@@ -1396,7 +1402,9 @@ struct AppState {
         profileStoragePath = storagePath ? storagePath : "";
         initialized = true;
         splashStarted = std::chrono::steady_clock::now();
+        splashOutroStart = -1.f;
 
+        splash.shutdown();
         profileSelection.shutdown();
         renderer.shutdown();
         rendererInitialized = false;
@@ -2173,82 +2181,151 @@ struct AppState {
         }
     }
 
+    float splashElapsed() const {
+        return std::chrono::duration<float>(std::chrono::steady_clock::now() - splashStarted).count();
+    }
+
+    // Toque / botao durante a abertura: pula direto para a animacao de saida.
+    void requestSplashSkip() {
+        const float elapsed = splashElapsed();
+        if (elapsed < xenon::SplashScreen::kMinSkipTime) return;
+        if (splashOutroStart < 0.f) splashOutroStart = elapsed;
+    }
+
+    void drawSplashText(const char* text, float x, float y, float scale, const Color& c) {
+        if (smoothTextWidth("X", 1.f) > 0.f) smoothText(text, x, y, scale, c);
+        else renderer.text(text, x, y, scale, c);
+    }
+
+    float splashTextWidth(const char* text, float scale) const {
+        const float wv = smoothTextWidth(text, scale);
+        return wv > 0.f ? wv : static_cast<float>(std::strlen(text)) * 6.f * scale;
+    }
+
+    static float splashEase(float a, float b, float t) {
+        const float x = std::clamp((t - a) / (b - a), 0.f, 1.f);
+        return x * x * (3.f - 2.f * x);
+    }
+
+    static float splashHash(float n) {
+        const float v = std::sin(n * 127.1f) * 43758.5453f;
+        return v - std::floor(v);
+    }
+
     void drawSplash() {
-        auto elapsed = std::chrono::duration<float>(
-            std::chrono::steady_clock::now() - splashStarted).count();
-        constexpr float duration = 3.4f;
-        if (elapsed >= duration) {
+        using xenon::SplashScreen;
+        const float t = splashElapsed();
+        const float naturalOutro = SplashScreen::kDuration - SplashScreen::kOutroLength;
+        if (splashOutroStart < 0.f && t >= naturalOutro) splashOutroStart = naturalOutro;
+        const float outro = splashOutroStart < 0.f ? 0.f
+            : std::clamp((t - splashOutroStart) / SplashScreen::kOutroLength, 0.f, 1.f);
+        if (outro >= 1.f) {
             showingSplash = false;
+            splash.shutdown();
             beginProfileSelection();
             return;
         }
 
-        float w = static_cast<float>(renderer.width);
-        float h = static_cast<float>(renderer.height);
-        float cx = w * .5f;
-        const float cy = h * .39f;
-        const float progress = std::clamp(elapsed / duration, 0.f, 1.f);
-        const float pulse = .5f + .5f * std::sin(elapsed * 4.f);
-        const Color grid{0.047f, 0.061f, 0.055f, 1.f};
-        const Color frame{0.12f, 0.19f, 0.15f, 1.f};
-        const Color glow{0.09f + pulse * .04f, 0.30f + pulse * .09f, 0.16f + pulse * .04f, 1.f};
-
-        for (int x = 40; x < static_cast<int>(w); x += 80) {
-            renderer.rect(static_cast<float>(x), 0.f, 1.f, h, grid);
+        const float w = static_cast<float>(renderer.width);
+        const float h = static_cast<float>(renderer.height);
+        const float cx = w * .5f;
+        if (splash.ready()) {
+            splash.draw(w, h, t, outro);
+        } else {
+            renderer.rect(0, 0, w, h, kBg);
         }
-        for (int y = 40; y < static_cast<int>(h); y += 80) {
-            renderer.rect(0.f, static_cast<float>(y), w, 1.f, grid);
+        const float fadeOut = 1.f - splashEase(0.f, .6f, outro);
+
+        // Logotipo: letras entram uma a uma com glitch e assentam em branco.
+        static const char* kLetters[] = {"X", "E", "N", "O", "N"};
+        const float targetW = std::min(w * .42f, 560.f);
+        const float titleScale = targetW / std::max(splashTextWidth("XENON", 1.f), 1.f);
+        const float spacing = 0.18f * targetW / 4.f * (1.f - splashEase(2.4f, 3.4f, t)) + targetW * .03f;
+        float totalW = 0.f;
+        for (const char* l : kLetters) totalW += splashTextWidth(l, titleScale) + spacing;
+        totalW -= spacing;
+        float x = cx - totalW * .5f;
+        const float titleY = h * .74f;
+        for (int i = 0; i < 5; ++i) {
+            const float start = 2.15f + i * .09f;
+            const float a = splashEase(start, start + .25f, t) * fadeOut;
+            const float lw = splashTextWidth(kLetters[i], titleScale);
+            if (a > 0.f) {
+                const float settle = splashEase(start, start + .5f, t);
+                const float frame = std::floor(t * 24.f);
+                const float glitchOn = (1.f - settle) + (splashHash(frame + i) > .985f ? .6f : 0.f);
+                const float jx = (splashHash(frame * 3.1f + i) - .5f) * 22.f * glitchOn;
+                const float jy = (1.f - settle) * 26.f;
+                Color glow = kGreen; glow.a = a * .55f;
+                Color red{1.f, .22f, .35f, a * .45f * glitchOn};
+                Color cyan{.3f, .92f, 1.f, a * .45f * glitchOn};
+                drawSplashText(kLetters[i], x + jx - 4.f, titleY + jy, titleScale, red);
+                drawSplashText(kLetters[i], x + jx + 4.f, titleY + jy, titleScale, cyan);
+                drawSplashText(kLetters[i], x + jx, titleY + jy + 2.f, titleScale, glow);
+                const float w2 = settle;
+                Color face{kGreen.r + (kText.r - kGreen.r) * w2, kGreen.g + (kText.g - kGreen.g) * w2,
+                           kGreen.b + (kText.b - kGreen.b) * w2, a};
+                drawSplashText(kLetters[i], x + jx, titleY + jy, titleScale, face);
+            }
+            x += lw + spacing;
         }
 
-        const float margin = 48.f;
-        const float frameW = w - margin * 2.f;
-        const float frameH = h - margin * 2.f;
-        const float corner = 54.f;
-        renderer.rect(margin, margin, corner, 2.f, frame);
-        renderer.rect(margin, margin, 2.f, corner, frame);
-        renderer.rect(w - margin - corner, margin, corner, 2.f, frame);
-        renderer.rect(w - margin - 2.f, margin, 2.f, corner, frame);
-        renderer.rect(margin, h - margin - 2.f, corner, 2.f, frame);
-        renderer.rect(margin, h - margin - corner, 2.f, corner, frame);
-        renderer.rect(w - margin - corner, h - margin - 2.f, corner, 2.f, frame);
-        renderer.rect(w - margin - 2.f, h - margin - corner, 2.f, corner, frame);
-        renderer.rect(cx - 230.f, margin, 460.f, 2.f, frame);
-        renderer.rect(cx - 230.f, h - margin - 2.f, 460.f, 2.f, frame);
-
-        const float scanY = margin + std::fmod(elapsed * 210.f, frameH);
-        renderer.rect(margin + 4.f, scanY, frameW - 8.f, 1.f, grid);
-        for (int i = 0; i < 18; ++i) {
-            const float drift = elapsed * (18.f + (i % 4) * 7.f);
-            const float x = 86.f + std::fmod(i * 71.f + drift, w - 172.f);
-            const float y = 92.f + std::fmod(i * 43.f + drift * .55f, h - 184.f);
-            renderer.roundedRect(x, y, i % 3 == 0 ? 3.f : 2.f, 2.f,
-                                 i % 3 == 0 ? frame : grid, 1.f);
+        // Subtitulo digitado.
+        const char* subtitle = "NEXT-GEN EXPERIMENTAL EMULATOR";
+        const int subLen = static_cast<int>(std::strlen(subtitle));
+        const int shown = static_cast<int>(std::clamp((t - 2.9f) * 38.f, 0.f, static_cast<float>(subLen)));
+        if (shown > 0) {
+            std::string sub(subtitle, shown);
+            if (shown < subLen || std::fmod(t, .8f) < .4f) sub += "_";
+            const float subScale = std::max(2.4f, titleScale * .16f);
+            Color c = kMuted; c.a = fadeOut;
+            drawSplashText(sub.c_str(), cx - splashTextWidth(subtitle, subScale) * .5f,
+                           titleY + h * .075f, subScale, c);
         }
 
-        const float emblemSize = 164.f + pulse * 8.f;
-        renderer.rotatedRect(cx, cy, emblemSize, emblemSize, 0.785398f, grid);
-        renderer.rotatedRect(cx, cy, 132.f, 132.f, 0.785398f, frame);
-        renderer.rotatedRect(cx, cy, 112.f, 112.f, 0.785398f, kBg);
-        renderer.rotatedRect(cx, cy, 112.f, 18.f, 0.785398f, glow);
-        renderer.rotatedRect(cx, cy, 112.f, 18.f, -0.785398f, glow);
-        renderer.rotatedRect(cx, cy, 82.f, 8.f, 0.785398f, kGreen);
-        renderer.rotatedRect(cx, cy, 82.f, 8.f, -0.785398f, kGreen);
-        renderer.roundedRect(cx - 5.f, cy - 5.f, 10.f, 10.f, kText, 5.f);
+        // Log de boot no canto, linha a linha.
+        static const char* kBoot[] = {
+            "> XENON CORE ............ ONLINE",
+            "> PPC DECODER ........... READY",
+            "> MEMORY MANAGER ........ 512 MB",
+            "> XDVDFS DRIVER ......... MOUNTED",
+            "> GPU PIPELINE .......... GLES2",
+        };
+        for (int i = 0; i < 5; ++i) {
+            const float start = .4f + i * .45f;
+            const float a = splashEase(start, start + .15f, t) * fadeOut * .85f;
+            if (a <= 0.f) continue;
+            Color c = (t - start) < .25f ? kGreen : kMuted; c.a = a;
+            drawSplashText(kBoot[i], 40.f, 48.f + i * 26.f, 2.4f, c);
+        }
 
-        constexpr float titleScale = 11.f;
-        renderer.text("XENON", cx - 15.f * titleScale, h * .62f, titleScale, kText);
-        renderer.text("EXPERIMENTAL EMULATOR", cx - 63.f * 3.f, h * .70f, 3.f, kMuted);
-        renderer.text("SYSTEM BOOT", margin + 18.f, margin + 22.f, 3.f, kMuted);
-        renderer.text("XENON CORE // 01", w - margin - 18.f - 48.f * 3.f,
-                      margin + 22.f, 3.f, kGreen);
-
-        constexpr float barW = 420.f;
+        // Barra de progresso segmentada com brilho correndo.
+        const float barW = std::min(w * .36f, 460.f);
         const float barX = cx - barW * .5f;
-        const float barY = h * .84f;
-        renderer.roundedRect(barX, barY, barW, 5.f, frame, 2.f);
-        renderer.roundedRect(barX, barY, barW * progress, 5.f, kGreen, 2.f);
-        renderer.text("INITIALIZING", barX, barY + 18.f, 2.f, kMuted);
-        renderer.text("BOOTING", barX + barW - 42.f, barY + 18.f, 2.f, kGreen);
+        const float barY = h * .92f;
+        const float progress = splashEase(.2f, naturalOutro, t);
+        constexpr int kSegments = 32;
+        const float segW = barW / kSegments;
+        for (int i = 0; i < kSegments; ++i) {
+            const float fi = static_cast<float>(i) / kSegments;
+            const bool on = fi < progress || outro > 0.f;
+            const float shine = std::exp(-std::pow((fi - std::fmod(t * .7f, 1.4f) + .2f) * 12.f, 2.f));
+            Color c = on ? Color{kGreen.r + shine * .6f, kGreen.g + shine * .1f, kGreen.b + shine * .5f, fadeOut}
+                         : Color{kPanel2.r, kPanel2.g, kPanel2.b, fadeOut * .8f};
+            renderer.roundedRect(barX + i * segW + 1.f, barY, segW - 2.f, 6.f, c, 2.f);
+        }
+        char pct[16];
+        std::snprintf(pct, sizeof(pct), "%d%%", static_cast<int>((outro > 0.f ? 1.f : progress) * 100.f));
+        Color pc = kGreen; pc.a = fadeOut;
+        drawSplashText(pct, barX + barW - splashTextWidth(pct, 2.2f), barY + 16.f, 2.2f, pc);
+        Color mc = kMuted; mc.a = fadeOut;
+        drawSplashText(progress < .5f ? "INITIALIZING" : "BOOTING SYSTEM", barX, barY + 16.f, 2.2f, mc);
+
+        if (t > 1.2f && outro <= 0.f) {
+            Color hc = kMuted; hc.a = (.35f + .35f * std::sin(t * 4.f));
+            const char* hint = "TOQUE OU PRESSIONE A PARA PULAR";
+            drawSplashText(hint, w - 40.f - splashTextWidth(hint, 2.f), h - 34.f, 2.f, hc);
+        }
     }
 
     void drawProfileSelect() {
@@ -2900,6 +2977,7 @@ void onAppCmd(android_app* app, int32_t cmd) {
             break;
         case APP_CMD_TERM_WINDOW:
             if (state) {
+                state->splash.shutdown();
                 state->profileSelection.shutdown();
                 state->renderer.shutdown();
                 state->rendererInitialized = false;
@@ -2921,6 +2999,12 @@ int32_t onInputEvent(android_app* app, AInputEvent* event) {
     auto* state = reinterpret_cast<AppState*>(app->userData);
     if (!state) return 0;
     if (AInputEvent_getType(event) == AINPUT_EVENT_TYPE_KEY) {
+        if (AKeyEvent_getAction(event) == AKEY_EVENT_ACTION_DOWN && state->showingSplash) {
+            const int32_t key = AKeyEvent_getKeyCode(event);
+            if (key == AKEYCODE_BACK) return 0;
+            state->requestSplashSkip();
+            return 1;
+        }
         if (AKeyEvent_getAction(event) == AKEY_EVENT_ACTION_DOWN && !state->showingSplash) {
             state->handleKey(AKeyEvent_getKeyCode(event));
             return 1;
@@ -2942,7 +3026,10 @@ int32_t onInputEvent(android_app* app, AInputEvent* event) {
         return 1;
     }
     if (AMotionEvent_getAction(event) == AMOTION_EVENT_ACTION_DOWN) {
-        if (state->showingSplash) return 1;
+        if (state->showingSplash) {
+            state->requestSplashSkip();
+            return 1;
+        }
         state->handleTouch(
             state->renderer.logicalX(AMotionEvent_getX(event, 0)),
             state->renderer.logicalY(AMotionEvent_getY(event, 0)));
@@ -3057,6 +3144,7 @@ void android_main(android_app* app) {
         }
         if (state.initialized) state.draw();
     }
+    state.splash.shutdown();
     state.profileSelection.shutdown();
     state.renderer.shutdown();
 }
