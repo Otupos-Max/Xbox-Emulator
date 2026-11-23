@@ -211,14 +211,15 @@ void drawOrb(const ProfileDrawApi& api, float cx, float cy, float radius, const 
 // Generic person silhouette used for "Criar perfil" and "Convidado".
 void drawSilhouette(const ProfileDrawApi& api, float cx, float top, float areaH,
                     const Color& color) {
-    const float headR = areaH * .17f;
-    const float headCy = top + areaH * .30f;
+    // Head and shoulders kept fully inside the portrait area.
+    const float headR = areaH * .15f;
+    const float headCy = top + areaH * .38f;
     drawCircle(api, cx, headCy, headR, color);
-    drawRect(api, cx - headR * .45f, headCy + headR * .8f, headR * .9f, headR * .6f, color);
-    const float shoulderTop = headCy + headR * 1.25f;
-    const float bodyW = headR * 4.f;
-    drawRoundedRect(api, cx - bodyW * .5f, shoulderTop, bodyW, top + areaH - shoulderTop + 20.f,
-                    headR * 1.5f, color);
+    const float shoulderTop = headCy + headR * 1.35f;
+    const float bodyW = headR * 3.6f;
+    const float bodyH = top + areaH - shoulderTop;
+    drawRoundedRect(api, cx - bodyW * .5f, shoulderTop, bodyW, bodyH,
+                    std::min(headR * 1.2f, bodyH * .5f), color);
 }
 
 void drawCreateProfileIcon(const ProfileDrawApi& api, float cx, float top, float areaH) {
@@ -953,8 +954,6 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
             kCardBottom.a};
         drawSplitRoundedRect(api, x, y, w, h, radius, portraitH, kCardTop, bottom);
         // Soft highlight across the portrait area.
-        drawRect(api, x + radius, y + 2.f, w - radius * 2.f, portraitH * .30f,
-                 {1.f, 1.f, 1.f, .05f});
         // Thin separator between portrait and label.
         drawRect(api, x, y + portraitH - 1.f, w, 1.5f, {1.f, 1.f, 1.f, .08f * (1.f - blend)});
 
@@ -963,7 +962,8 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
         if (isCreate) {
             drawCreateProfileIcon(api, centerX, y + 8.f, portraitH - 8.f);
         } else if (isGuest) {
-            drawSilhouette(api, centerX, y + 8.f, portraitH - 8.f, kSilhouette);
+            drawSilhouette(api, centerX, y + 6.f, portraitH - 6.f,
+                           {kSilhouette.r, kSilhouette.g, kSilhouette.b, .55f});
         } else {
             glEnable(GL_DEPTH_TEST);
             drawPortrait(profileFemale_ ? female_ : male_, x + 3.f, y + 3.f, w - 6.f,
@@ -1004,15 +1004,15 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
 
     const float hintY = height - 34.f;
     const float hintPanelW = 74.f + textWidth("Selecionar", 3.f) + 56.f +
-                             textWidth("Voltar", 3.f) + 24.f;
+                             textWidth("Voltar", 3.f) + 4.f;
     drawRoundedRect(api, 28.f, hintY - 24.f, hintPanelW, 48.f, 24.f, kPanel);
     drawOrb(api, 52.f, hintY, 14.f, kGreen);
-    drawText("A", 52.f - textWidth("A", 2.6f) * .5f, hintY - 13.f, 2.6f,
+    drawText("A", 52.f - textWidth("A", 2.6f) * .5f, hintY - 9.f, 2.6f,
              kWhite.r, kWhite.g, kWhite.b, 1.f);
     drawText("Selecionar", 74.f, hintY - 14.f, 3.f, kWhite.r, kWhite.g, kWhite.b, 1.f);
     const float bX = 74.f + textWidth("Selecionar", 3.f) + 34.f;
     drawOrb(api, bX, hintY, 14.f, kRed);
-    drawText("B", bX - textWidth("B", 2.6f) * .5f, hintY - 13.f, 2.6f,
+    drawText("B", bX - textWidth("B", 2.6f) * .5f, hintY - 9.f, 2.6f,
              kWhite.r, kWhite.g, kWhite.b, 1.f);
     drawText("Voltar", bX + 22.f, hintY - 14.f, 3.f, kWhite.r, kWhite.g, kWhite.b, 1.f);
 }
