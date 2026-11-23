@@ -41,7 +41,7 @@ float noise(vec2 p) {
 }
 float fbm(vec2 p) {
     float v = 0.0, a = 0.5;
-    for (int i = 0; i < 5; i++) { v += a * noise(p); p = rot(0.6) * p * 2.03; a *= 0.5; }
+    for (int i = 0; i < 3; i++) { v += a * noise(p); p = rot(0.6) * p * 2.03; a *= 0.5; }
     return v;
 }
 float sdHex(vec2 p, float r) {
@@ -101,7 +101,7 @@ vec3 emblem(vec2 p, float t) {
     col += (0.010 / (r0 + 0.006)) * coreT * beat * mix(GREEN, vec3(1.0), 0.6);
     col += smoothstep(0.03, 0.0, r0) * coreT * vec3(1.0);
 
-    for (int i = 0; i < 28; i++) {
+    for (int i = 0; i < 16; i++) {
         float fi = float(i);
         float h = hash11(fi + 3.0);
         float rad = 0.17 + 0.28 * hash11(fi * 1.7);
@@ -136,7 +136,8 @@ vec3 scene(vec2 p, float t) {
     // Nebulosa de plasma pos-ignicao.
     float neb = ease(1.3, 3.0, t);
     vec2 np = p * 2.2 + vec2(t * 0.04, -t * 0.03);
-    float f = fbm(np + fbm(np * 1.3 + t * 0.08));
+    vec2 nebulaWarp = vec2(sin(np.y * 1.7 + t * 0.08), cos(np.x * 1.7 - t * 0.08)) * 0.12;
+    float f = fbm(np + nebulaWarp);
     col += mix(vec3(0.0, 0.06, 0.04), vec3(0.05, 0.30, 0.20), f * f) * f * neb * smoothstep(1.4, 0.1, r);
 
     // Grade hexagonal holografica pulsante.
@@ -172,11 +173,11 @@ void main() {
     // Aberracao cromatica no emblema.
     float ca = 0.004 + ring * 0.02 + uOutro * 0.03 + 0.003 * step(0.97, hash11(floor(t * 12.0)));
     vec2 off = vec2(ca, 0.0);
+    vec3 eg = emblem(dp, t);
     vec3 e;
     e.r = emblem(dp + off, t).r;
-    e.g = emblem(dp, t).g;
+    e.g = eg.g;
     e.b = emblem(dp - off, t).b;
-    vec3 eg = emblem(dp, t);
     e = max(e, eg * vec3(0.0, 1.0, 0.0)) + eg * vec3(0.2, 0.0, 0.2);
     col += e;
 
