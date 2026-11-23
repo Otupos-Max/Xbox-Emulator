@@ -38,6 +38,7 @@ public:
     void setSelectedProfile(int index);
     void confirmSelection();
     void cancelSelection();
+    void resetIntro();
     bool hasProfile() const { return !profileName_.empty(); }
     bool hasActiveProfile() const { return activeProfile_ >= 0; }
     int activeProfile() const { return activeProfile_; }
@@ -74,7 +75,7 @@ private:
     void drawModel(const Model& model, float centerX, float centerY, float scale,
                    float angle, float alpha, float verticalScale);
     void drawPortrait(const Model& model, float x, float y, float w, float h,
-                      float elapsedSeconds);
+                      float elapsedSeconds, float alpha);
     void loadProfile();
     int profileCount() const;
     int createProfileIndex() const;

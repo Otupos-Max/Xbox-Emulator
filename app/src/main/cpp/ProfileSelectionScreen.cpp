@@ -320,6 +320,14 @@ void ProfileSelectionScreen::shutdown() {
     hasPreviousFrame_ = false;
 }
 
+void ProfileSelectionScreen::resetIntro() {
+    introComplete_ = false;
+    previousFrameTime_ = 0.f;
+    hasPreviousFrame_ = false;
+    joystickDirection_ = 0;
+    for (float& blend : selectionBlend_) blend = 0.f;
+}
+
 bool ProfileSelectionScreen::createPrograms() {
     static const char* backgroundVertex = R"(precision highp float;
 attribute vec2 position;
@@ -375,6 +383,7 @@ void main() {
 
     float vignette = smoothstep(0.35, 1.0, length((uv - vec2(0.5, 0.55)) * vec2(1.0, 1.2)));
     base *= 1.0 - vignette * 0.18;
+    base = mix(vec3(0.012, 0.016, 0.014), base, smoothstep(0.0, 0.75, time));
     gl_FragColor = vec4(base, 1.0);
 })";
     static const char* modelVertex = R"(precision highp float;
@@ -715,7 +724,7 @@ void ProfileSelectionScreen::drawBackground(float elapsedSeconds) {
     if (backgroundProgram_ == 0 || backgroundBuffer_ == 0) return;
     glDisable(GL_DEPTH_TEST);
     glUseProgram(backgroundProgram_);
-    glUniform1f(backgroundTime_, elapsedSeconds);
+    glUniform1f(backgroundTime_, elapsedSeconds - 1.37f);
     glBindBuffer(GL_ARRAY_BUFFER, backgroundBuffer_);
     glVertexAttribPointer(static_cast<GLuint>(backgroundPosition_), 2, GL_FLOAT, GL_FALSE,
                           0, nullptr);
@@ -839,7 +848,7 @@ float ProfileSelectionScreen::textWidth(const char* text, float scale) const {
 }
 
 void ProfileSelectionScreen::drawPortrait(const Model& model, float x, float y, float w,
-                                          float h, float elapsedSeconds) {
+                                          float h, float elapsedSeconds, float alpha) {
     // Clip the model to the portrait area so only head and shoulders are visible.
     GLint viewport[4] = {0, 0, 1280, 720};
     glGetIntegerv(GL_VIEWPORT, viewport);
@@ -852,7 +861,7 @@ void ProfileSelectionScreen::drawPortrait(const Model& model, float x, float y, 
     glClear(GL_DEPTH_BUFFER_BIT);
     const float scale = h * 1.45f;
     const float yaw = std::sin(elapsedSeconds * .18f) * .02f;
-    drawModel(model, x + w * .5f, y + scale * .93f, scale, yaw, 1.f, 1.f);
+    drawModel(model, x + w * .5f, y + scale * .93f, scale, yaw, alpha, 1.f);
     glDisable(GL_SCISSOR_TEST);
 }
 
@@ -862,10 +871,14 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    const float intro = std::clamp(elapsedSeconds / 1.15f, 0.f, 1.f);
-    if (intro < 1.f) {
+    constexpr float stripeStart = 0.32f;
+    constexpr float stripeDuration = 1.0f;
+    const float intro = std::clamp((elapsedSeconds - stripeStart) / stripeDuration, 0.f, 1.f);
+    if (elapsedSeconds > stripeStart && intro < 1.f) {
         const float stripeX = -width * .3f + (width * 1.6f) * intro;
         const float stripeY = height * .48f;
+        drawRect(api, stripeX - width * .18f, stripeY - 18.f, width * .36f, 36.f,
+                 {kGreenBright.r, kGreenBright.g, kGreenBright.b, .045f});
         drawRect(api, stripeX - width * .12f, stripeY - 5.f, width * .24f, 10.f,
                  {kGreenBright.r, kGreenBright.g, kGreenBright.b, .12f});
         drawRect(api, stripeX - width * .08f, stripeY - 2.f, width * .16f, 4.f,
@@ -874,9 +887,23 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
                  {0.82f, 1.f, 0.75f, .9f});
     }
 
-    if (intro < .72f) return;
-    introComplete_ = intro >= 1.f;
-    const float reveal = std::clamp((intro - .72f) / .28f, 0.f, 1.f);
+    const float reveal = std::clamp(
+        (elapsedSeconds - stripeStart - stripeDuration) / .9f, 0.f, 1.f);
+    if (reveal <= 0.f) return;
+    introComplete_ = reveal >= 1.f;
+
+    struct FadedDrawContext {
+        const ProfileDrawApi* base;
+        float alpha;
+    };
+    FadedDrawContext fadedContext{&api, reveal};
+    const ProfileDrawApi uiApi{
+        &fadedContext,
+        [](void* context, float x, float y, float w, float h,
+           float r, float g, float b, float a) {
+            const auto* faded = static_cast<const FadedDrawContext*>(context);
+            faded->base->rect(faded->base->context, x, y, w, h, r, g, b, a * faded->alpha);
+        }};
     float delta = hasPreviousFrame_ ? elapsedSeconds - previousFrameTime_ : 1.f / 60.f;
     delta = std::clamp(delta, 0.f, 0.08f);
     previousFrameTime_ = elapsedSeconds;
@@ -898,9 +925,9 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
         glDisable(GL_DEPTH_TEST);
         const float floorLine = height - 42.f;
         const float heroCenterX = width * .235f;
-        drawRect(api, heroCenterX - 150.f, floorLine - 8.f, 300.f, 14.f,
+        drawRect(uiApi, heroCenterX - 150.f, floorLine - 8.f, 300.f, 14.f,
                  {0.f, 0.f, 0.f, .10f});
-        drawRect(api, heroCenterX - 100.f, floorLine - 5.f, 200.f, 8.f,
+        drawRect(uiApi, heroCenterX - 100.f, floorLine - 5.f, 200.f, 8.f,
                  {0.f, 0.f, 0.f, .12f});
         glEnable(GL_DEPTH_TEST);
         glClear(GL_DEPTH_BUFFER_BIT);
@@ -908,7 +935,7 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
         const float modelScale = std::min(height * .45f, 330.f);
         const float modelCenterY = floorLine - modelScale * .995f;
         const float idleYaw = std::sin(elapsedSeconds * .22f) * .012f;
-        drawModel(heroModel, heroCenterX, modelCenterY, modelScale, idleYaw, 1.f, 1.f);
+        drawModel(heroModel, heroCenterX, modelCenterY, modelScale, idleYaw, reveal, 1.f);
         glDisable(GL_DEPTH_TEST);
     }
 
@@ -918,37 +945,52 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
         ? "Selecione seu perfil ou entre como convidado"
         : "Crie uma conta ou entre como convidado";
     drawText(title, rightEdge - textWidth(title, 6.6f), height * .075f, 6.6f,
-             kWhite.r, kWhite.g, kWhite.b, kWhite.a);
+             kWhite.r, kWhite.g, kWhite.b, kWhite.a * reveal);
     drawText(subtitle, rightEdge - textWidth(subtitle, 3.3f), height * .175f, 3.3f,
-             kText.r, kText.g, kText.b, .72f);
+             kText.r, kText.g, kText.b, .72f * reveal);
     // Accent underline below the header.
     const float accentW = 64.f * reveal;
-    drawRoundedRect(api, rightEdge - accentW, height * .245f, accentW, 4.f, 2.f, kGreen);
+    drawRoundedRect(uiApi, rightEdge - accentW, height * .245f, accentW, 4.f, 2.f, kGreen);
 
     const CardLayout layout = cardLayout(width, height, count);
     const float radius = 14.f;
     const float pulse = .5f + .5f * std::sin(elapsedSeconds * 2.7f);
 
     for (int i = 0; i < count; ++i) {
+        const float cardProgress = std::clamp((reveal - i * .14f) / .72f, 0.f, 1.f);
+        const float cardReveal = cardProgress * cardProgress * (3.f - 2.f * cardProgress);
+        FadedDrawContext cardContext{&api, cardReveal};
+        const ProfileDrawApi cardApi{
+            &cardContext,
+            [](void* context, float x, float y, float w, float h,
+               float r, float g, float b, float a) {
+                const auto* faded = static_cast<const FadedDrawContext*>(context);
+                faded->base->rect(faded->base->context, x, y, w, h, r, g, b, a * faded->alpha);
+            }};
         const float blend = std::clamp(selectionBlend_[i], 0.f, 1.f);
         const float grow = blend * 14.f;
-        const float x = layout.startX + i * (layout.width + layout.gap) - grow * .5f;
-        const float y = layout.top + (1.f - reveal) * 55.f - grow * 1.4f;
-        const float w = layout.width + grow;
-        const float h = layout.height + grow * 1.4f;
+        const float cardScale = .88f + .12f * cardReveal;
+        const float baseWidth = layout.width * cardScale;
+        const float baseHeight = layout.height * cardScale;
+        const float x = layout.startX + i * (layout.width + layout.gap) +
+                        (layout.width - baseWidth) * .5f - grow * .5f;
+        const float y = layout.top + (1.f - cardReveal) * 60.f +
+                        (layout.height - baseHeight) * .5f - grow * 1.4f;
+        const float w = baseWidth + grow;
+        const float h = baseHeight + grow * 1.4f;
         const float portraitH = h * .65f;
         const float centerX = x + w * .5f;
 
         // Drop shadow.
-        drawRoundedRect(api, x + 3.f, y + 10.f, w, h, radius, {0.f, 0.f, 0.f, .22f});
-        drawRoundedRect(api, x - 1.f, y - 1.f, w + 2.f, h + 2.f, radius + 1.f, kCardBorder);
+        drawRoundedRect(cardApi, x + 3.f, y + 10.f, w, h, radius, {0.f, 0.f, 0.f, .22f});
+        drawRoundedRect(cardApi, x - 1.f, y - 1.f, w + 2.f, h + 2.f, radius + 1.f, kCardBorder);
 
         // Outer neon glow on the selected card.
         if (blend > .01f) {
             const float glow = (.18f + .10f * pulse) * blend;
             for (int ring = 4; ring >= 1; --ring) {
                 const float spread = ring * 4.f;
-                drawRoundedRect(api, x - spread, y - spread, w + spread * 2.f, h + spread * 2.f,
+                drawRoundedRect(cardApi, x - spread, y - spread, w + spread * 2.f, h + spread * 2.f,
                                 radius + spread,
                                 {kGreenBright.r, kGreenBright.g, kGreenBright.b,
                                  glow / static_cast<float>(ring)});
@@ -960,27 +1002,27 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
             kCardBottom.g + (kGreen.g - kCardBottom.g) * blend,
             kCardBottom.b + (kGreen.b - kCardBottom.b) * blend,
             kCardBottom.a};
-        drawSplitRoundedRect(api, x, y, w, h, radius, portraitH, kCardTop, bottom);
+        drawSplitRoundedRect(cardApi, x, y, w, h, radius, portraitH, kCardTop, bottom);
         // Soft highlight across the portrait area.
         // Thin separator between portrait and label.
-        drawRect(api, x, y + portraitH - 1.f, w, 1.5f, {1.f, 1.f, 1.f, .08f * (1.f - blend)});
+        drawRect(cardApi, x, y + portraitH - 1.f, w, 1.5f, {1.f, 1.f, 1.f, .08f * (1.f - blend)});
 
         const bool isCreate = !hasProfile() && i == createProfileIndex();
         const bool isGuest = i == guestProfileIndex();
         if (isCreate) {
-            drawCreateProfileIcon(api, centerX, y + 8.f, portraitH - 8.f);
+            drawCreateProfileIcon(cardApi, centerX, y + 8.f, portraitH - 8.f);
         } else if (isGuest) {
-            drawSilhouette(api, centerX, y + 6.f, portraitH - 6.f,
+            drawSilhouette(cardApi, centerX, y + 6.f, portraitH - 6.f,
                            {kSilhouette.r, kSilhouette.g, kSilhouette.b, .55f});
         } else {
             glEnable(GL_DEPTH_TEST);
             drawPortrait(profileFemale_ ? female_ : male_, x + 3.f, y + 3.f, w - 6.f,
-                         portraitH - 3.f, elapsedSeconds);
+                         portraitH - 3.f, elapsedSeconds, cardReveal);
             glDisable(GL_DEPTH_TEST);
         }
 
         if (blend > .01f) {
-            drawRoundedOutline(api, x - 1.f, y - 1.f, w + 2.f, h + 2.f, radius + 1.f, 3.5f,
+            drawRoundedOutline(cardApi, x - 1.f, y - 1.f, w + 2.f, h + 2.f, radius + 1.f, 3.5f,
                                {kGreenBright.r, kGreenBright.g, kGreenBright.b,
                                 (.85f + .15f * pulse) * blend});
         }
@@ -995,34 +1037,34 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
         const char* status = isCreate ? "Nova conta" :
                              isGuest ? "Temporário" : "Conta";
         drawText(name, textX, y + portraitH + 12.f, 3.4f,
-                 labelColor.r, labelColor.g, labelColor.b, 1.f);
+                 labelColor.r, labelColor.g, labelColor.b, cardReveal);
 
         const float orbY = y + portraitH + (h - portraitH) * .70f;
         const float orbR = 9.f;
         if (isCreate) {
-            drawCircle(api, textX + orbR, orbY, orbR, {0.28f, 0.29f, 0.31f, 1.f});
-            drawRect(api, textX + orbR - 5.f, orbY - 1.25f, 10.f, 2.5f, kWhite);
-            drawRect(api, textX + orbR - 1.25f, orbY - 5.f, 2.5f, 10.f, kWhite);
+            drawCircle(cardApi, textX + orbR, orbY, orbR, {0.28f, 0.29f, 0.31f, 1.f});
+            drawRect(cardApi, textX + orbR - 5.f, orbY - 1.25f, 10.f, 2.5f, kWhite);
+            drawRect(cardApi, textX + orbR - 1.25f, orbY - 5.f, 2.5f, 10.f, kWhite);
         } else {
-            drawOrb(api, textX + orbR, orbY, orbR, isGuest ? kOffline : kOnline);
+            drawOrb(cardApi, textX + orbR, orbY, orbR, isGuest ? kOffline : kOnline);
         }
         drawText(status, textX + orbR * 2.f + 10.f, orbY - 12.f, 2.6f,
-                 labelColor.r, labelColor.g, labelColor.b, .95f);
+                 labelColor.r, labelColor.g, labelColor.b, .95f * cardReveal);
     }
 
     const float hintY = height - 34.f;
     const float hintPanelW = 74.f + textWidth("Selecionar", 3.f) + 56.f +
                              textWidth("Voltar", 3.f) + 4.f;
-    drawRoundedRect(api, 28.f, hintY - 24.f, hintPanelW, 48.f, 24.f, kPanel);
-    drawOrb(api, 52.f, hintY, 14.f, kGreen);
+    drawRoundedRect(uiApi, 28.f, hintY - 24.f, hintPanelW, 48.f, 24.f, kPanel);
+    drawOrb(uiApi, 52.f, hintY, 14.f, kGreen);
     drawText("A", 52.f - textWidth("A", 2.6f) * .5f, hintY - 9.f, 2.6f,
-             kWhite.r, kWhite.g, kWhite.b, 1.f);
-    drawText("Selecionar", 74.f, hintY - 14.f, 3.f, kWhite.r, kWhite.g, kWhite.b, 1.f);
+             kWhite.r, kWhite.g, kWhite.b, reveal);
+    drawText("Selecionar", 74.f, hintY - 14.f, 3.f, kWhite.r, kWhite.g, kWhite.b, reveal);
     const float bX = 74.f + textWidth("Selecionar", 3.f) + 34.f;
-    drawOrb(api, bX, hintY, 14.f, kRed);
+    drawOrb(uiApi, bX, hintY, 14.f, kRed);
     drawText("B", bX - textWidth("B", 2.6f) * .5f, hintY - 9.f, 2.6f,
-             kWhite.r, kWhite.g, kWhite.b, 1.f);
-    drawText("Voltar", bX + 22.f, hintY - 14.f, 3.f, kWhite.r, kWhite.g, kWhite.b, 1.f);
+             kWhite.r, kWhite.g, kWhite.b, reveal);
+    drawText("Voltar", bX + 22.f, hintY - 14.f, 3.f, kWhite.r, kWhite.g, kWhite.b, reveal);
 }
 
 ProfileInputAction ProfileSelectionScreen::handleTouch(float x, float y, float width,

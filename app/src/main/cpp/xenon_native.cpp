@@ -93,6 +93,7 @@ void takePendingStoreDownloadUpdates(std::vector<StoreDownloadProgress>& updates
 }
 
 enum class Screen : int { Home, Store, Library, Settings, About, ProfileSelect };
+enum class SceneTransition { None, LeavingProfile, EnteringHome };
 
 struct Rect { float x, y, w, h; };
 struct Color { float r, g, b, a; };
@@ -1415,6 +1416,8 @@ struct AppState {
     std::string profileStoragePath;
     std::chrono::steady_clock::time_point splashStarted;
     std::chrono::steady_clock::time_point profileSelectionStarted;
+    std::chrono::steady_clock::time_point sceneTransitionStarted;
+    SceneTransition sceneTransition = SceneTransition::None;
     GLuint logoTexture = 0;
     bool logoLoadAttempted = false;
     float logoAspect = 1.f;
@@ -1455,6 +1458,11 @@ struct AppState {
                                 "Profile selection initialization failed; check model assets and GLES support");
         }
         profileSelectionStarted = std::chrono::steady_clock::now();
+    }
+
+    void beginProfileSelection() {
+        profileSelectionStarted = std::chrono::steady_clock::now();
+        profileSelection.resetIntro();
     }
 
     // Decodifica app/src/main/assets/logo/logo.png (via BitmapFactory, pelo
@@ -2453,7 +2461,7 @@ struct AppState {
             std::chrono::steady_clock::now() - splashStarted).count();
         if (elapsed >= 2.7f) {
             showingSplash = false;
-            profileSelectionStarted = std::chrono::steady_clock::now();
+            beginProfileSelection();
             return;
         }
 
@@ -2495,6 +2503,33 @@ struct AppState {
             std::chrono::steady_clock::now() - profileSelectionStarted).count();
         profileSelection.draw(static_cast<float>(renderer.width),
                               static_cast<float>(renderer.height), elapsed, api);
+    }
+
+    void drawSceneTransition() {
+        if (sceneTransition == SceneTransition::None) return;
+        constexpr float duration = .72f;
+        const float elapsed = std::chrono::duration<float>(
+            std::chrono::steady_clock::now() - sceneTransitionStarted).count();
+        const float progress = std::clamp(elapsed / duration, 0.f, 1.f);
+        const float eased = progress * progress * (3.f - 2.f * progress);
+        const float width = static_cast<float>(renderer.width);
+        const float height = static_cast<float>(renderer.height);
+        const float edge = width * eased;
+        if (sceneTransition == SceneTransition::LeavingProfile) {
+            renderer.rect(0.f, 0.f, edge, height, Color{.004f, .008f, .006f, 1.f});
+        } else {
+            renderer.rect(edge, 0.f, width - edge, height, Color{.004f, .008f, .006f, 1.f});
+        }
+
+        const float centerY = height * .48f;
+        renderer.rect(edge - width * .18f, centerY - 18.f, width * .36f, 36.f,
+                      Color{.21f, .87f, .41f, .055f});
+        renderer.rect(edge - width * .12f, centerY - 7.f, width * .24f, 14.f,
+                      Color{.21f, .87f, .41f, .18f});
+        renderer.rect(edge - width * .08f, centerY - 2.f, width * .16f, 4.f,
+                      Color{.48f, .96f, .56f, .65f});
+        renderer.rect(edge - width * .035f, centerY - 1.f, width * .07f, 2.f,
+                      Color{.92f, 1.f, .94f, .95f});
     }
 
     void requestAddGameDialog() {
@@ -2560,9 +2595,13 @@ struct AppState {
     }
 
     void applyProfileAction(xenon::ProfileInputAction action) {
+        if (sceneTransition != SceneTransition::None) return;
         if (action == xenon::ProfileInputAction::Confirm) {
             profileSelection.confirmSelection();
-            if (profileSelection.hasActiveProfile()) screen = Screen::Home;
+            if (profileSelection.hasActiveProfile()) {
+                sceneTransition = SceneTransition::LeavingProfile;
+                sceneTransitionStarted = std::chrono::steady_clock::now();
+            }
         } else if (action == xenon::ProfileInputAction::CreateProfile) {
             requestCreateProfileDialog();
         } else if (action == xenon::ProfileInputAction::Back) {
@@ -2589,6 +2628,19 @@ struct AppState {
             return;
         }
         pumpTextureUploads();
+        if (sceneTransition == SceneTransition::LeavingProfile) {
+            const float elapsed = std::chrono::duration<float>(
+                std::chrono::steady_clock::now() - sceneTransitionStarted).count();
+            if (elapsed >= .72f) {
+                screen = Screen::Home;
+                sceneTransition = SceneTransition::EnteringHome;
+                sceneTransitionStarted = std::chrono::steady_clock::now();
+            }
+        } else if (sceneTransition == SceneTransition::EnteringHome) {
+            const float elapsed = std::chrono::duration<float>(
+                std::chrono::steady_clock::now() - sceneTransitionStarted).count();
+            if (elapsed >= .72f) sceneTransition = SceneTransition::None;
+        }
         switch (screen) {
             case Screen::Home: drawHome(); break;
             case Screen::Store: drawStore(); break;
@@ -2599,10 +2651,12 @@ struct AppState {
         }
         if (screen != Screen::ProfileSelect) drawChrome();
         if (showGameDetail) drawGameDetailOverlay();
+        drawSceneTransition();
         renderer.present();
     }
 
     void handleTouch(float x, float y) {
+        if (sceneTransition != SceneTransition::None) return;
         if (screen == Screen::ProfileSelect) {
             applyProfileAction(profileSelection.handleTouch(
                 x, y, static_cast<float>(renderer.width), static_cast<float>(renderer.height)));
@@ -2746,6 +2800,7 @@ struct AppState {
             if (x >= profileX && x < profileX + profileW &&
                 y >= profileY && y < profileY + 66.f) {
                 profileSelection.setSelectedProfile(profileSelection.activeProfile());
+                beginProfileSelection();
                 screen = Screen::ProfileSelect;
                 return;
             }
@@ -2883,6 +2938,7 @@ struct AppState {
     }
 
     void handleKey(int keyCode) {
+        if (sceneTransition != SceneTransition::None) return;
         keyCode = normalizeControllerKey(keyCode);
         if (showGameDetail) {
             switch (keyCode) {
@@ -2945,6 +3001,7 @@ struct AppState {
                 break;
             case AKEYCODE_BUTTON_X:
                 profileSelection.setSelectedProfile(profileSelection.activeProfile());
+                beginProfileSelection();
                 screen = Screen::ProfileSelect;
                 break;
             case AKEYCODE_BACK:
@@ -2953,6 +3010,7 @@ struct AppState {
             case AKEYCODE_BUTTON_SELECT:
                 if (screen == Screen::Home) {
                     profileSelection.setSelectedProfile(profileSelection.activeProfile());
+                    beginProfileSelection();
                     screen = Screen::ProfileSelect;
                 } else {
                     screen = Screen::Home;
@@ -3021,6 +3079,7 @@ struct AppState {
     }
 
     void handleControllerMotion(const AInputEvent* event) {
+        if (sceneTransition != SceneTransition::None) return;
         const float leftX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_X, 0);
         float rightX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_RX, 0);
         const float axisZ = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Z, 0);
