@@ -44,8 +44,10 @@ constexpr Color kGreenBright{0.48f, 0.96f, 0.56f, 1.f};
 constexpr Color kOnline{0.38f, 0.86f, 0.44f, 1.f};
 constexpr Color kOffline{0.42f, 0.43f, 0.45f, 1.f};
 constexpr Color kRed{0.94f, 0.25f, 0.28f, 1.f};
-constexpr Color kCardTop{0.12f, 0.17f, 0.14f, 0.98f};
-constexpr Color kCardBottom{0.16f, 0.21f, 0.18f, 0.98f};
+constexpr Color kCardTop{0.10f, 0.14f, 0.12f, 0.96f};
+constexpr Color kCardBottom{0.07f, 0.10f, 0.085f, 0.97f};
+constexpr Color kCardBorder{1.f, 1.f, 1.f, 0.08f};
+constexpr Color kPanel{0.02f, 0.035f, 0.028f, 0.55f};
 constexpr Color kSilhouette{0.72f, 0.79f, 0.74f, 1.f};
 
 struct CardLayout {
@@ -58,13 +60,13 @@ struct CardLayout {
 
 CardLayout cardLayout(float width, float height, int count) {
     CardLayout layout{};
-    layout.gap = 14.f;
-    const float areaWidth = width * .59f;
-    layout.width = (areaWidth - layout.gap * (count - 1)) / count;
-    layout.startX = width * .385f + (areaWidth - count * layout.width -
-                                     (count - 1) * layout.gap) * .5f;
-    layout.top = height * .27f;
-    layout.height = height * .40f;
+    layout.gap = 22.f;
+    const float areaWidth = width * .55f;
+    layout.width = std::min((areaWidth - layout.gap * (count - 1)) / count, height * .34f);
+    const float usedWidth = count * layout.width + (count - 1) * layout.gap;
+    layout.startX = width - 48.f - usedWidth;
+    layout.top = height * .30f;
+    layout.height = layout.width * 1.38f;
     return layout;
 }
 
@@ -908,16 +910,19 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
         : "Crie uma conta ou entre como convidado";
     drawText(title, rightEdge - textWidth(title, 6.6f), height * .075f, 6.6f,
              kWhite.r, kWhite.g, kWhite.b, kWhite.a);
-    drawText(subtitle, rightEdge - textWidth(subtitle, 3.5f), height * .165f, 3.5f,
-             kWhite.r, kWhite.g, kWhite.b, .92f);
+    drawText(subtitle, rightEdge - textWidth(subtitle, 3.3f), height * .175f, 3.3f,
+             kText.r, kText.g, kText.b, .72f);
+    // Accent underline below the header.
+    const float accentW = 64.f * reveal;
+    drawRoundedRect(api, rightEdge - accentW, height * .245f, accentW, 4.f, 2.f, kGreen);
 
     const CardLayout layout = cardLayout(width, height, count);
-    const float radius = 12.f;
+    const float radius = 14.f;
     const float pulse = .5f + .5f * std::sin(elapsedSeconds * 2.7f);
 
     for (int i = 0; i < count; ++i) {
         const float blend = std::clamp(selectionBlend_[i], 0.f, 1.f);
-        const float grow = blend * 10.f;
+        const float grow = blend * 14.f;
         const float x = layout.startX + i * (layout.width + layout.gap) - grow * .5f;
         const float y = layout.top + (1.f - reveal) * 55.f - grow * 1.4f;
         const float w = layout.width + grow;
@@ -926,7 +931,8 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
         const float centerX = x + w * .5f;
 
         // Drop shadow.
-        drawRoundedRect(api, x + 2.f, y + 6.f, w, h, radius, {0.f, 0.f, 0.f, .14f});
+        drawRoundedRect(api, x + 3.f, y + 10.f, w, h, radius, {0.f, 0.f, 0.f, .22f});
+        drawRoundedRect(api, x - 1.f, y - 1.f, w + 2.f, h + 2.f, radius + 1.f, kCardBorder);
 
         // Outer neon glow on the selected card.
         if (blend > .01f) {
@@ -947,8 +953,10 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
             kCardBottom.a};
         drawSplitRoundedRect(api, x, y, w, h, radius, portraitH, kCardTop, bottom);
         // Soft highlight across the portrait area.
-        drawRect(api, x + radius, y + 2.f, w - radius * 2.f, portraitH * .35f,
-                 {1.f, 1.f, 1.f, .10f});
+        drawRect(api, x + radius, y + 2.f, w - radius * 2.f, portraitH * .30f,
+                 {1.f, 1.f, 1.f, .05f});
+        // Thin separator between portrait and label.
+        drawRect(api, x, y + portraitH - 1.f, w, 1.5f, {1.f, 1.f, 1.f, .08f * (1.f - blend)});
 
         const bool isCreate = !hasProfile() && i == createProfileIndex();
         const bool isGuest = i == guestProfileIndex();
@@ -978,7 +986,7 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
                            isGuest ? "Convidado" : profileName_.c_str();
         const char* status = isCreate ? "Nova conta" :
                              isGuest ? "Temporário" : "Conta";
-        drawText(name, textX, y + portraitH + 14.f, 3.3f,
+        drawText(name, textX, y + portraitH + 12.f, 3.4f,
                  labelColor.r, labelColor.g, labelColor.b, 1.f);
 
         const float orbY = y + portraitH + (h - portraitH) * .70f;
@@ -995,6 +1003,9 @@ void ProfileSelectionScreen::draw(float width, float height, float elapsedSecond
     }
 
     const float hintY = height - 34.f;
+    const float hintPanelW = 74.f + textWidth("Selecionar", 3.f) + 56.f +
+                             textWidth("Voltar", 3.f) + 24.f;
+    drawRoundedRect(api, 28.f, hintY - 24.f, hintPanelW, 48.f, 24.f, kPanel);
     drawOrb(api, 52.f, hintY, 14.f, kGreen);
     drawText("A", 52.f - textWidth("A", 2.6f) * .5f, hintY - 13.f, 2.6f,
              kWhite.r, kWhite.g, kWhite.b, 1.f);
