@@ -2234,98 +2234,36 @@ struct AppState {
         } else {
             renderer.rect(0, 0, w, h, kBg);
         }
-        const float fadeOut = 1.f - splashEase(0.f, .6f, outro);
+        const float fadeOut = 1.f - outro;
 
-        // Logotipo: letras entram uma a uma com glitch e assentam em branco.
-        static const char* kLetters[] = {"X", "E", "N", "O", "N"};
-        const float targetW = std::min(w * .42f, 560.f);
+        // Logotipo limpo: sobe e aparece com fade.
+        const float targetW = std::min(w * .34f, 420.f);
         const float titleScale = targetW / std::max(splashTextWidth("XENON", 1.f), 1.f);
-        const float spacing = 0.18f * targetW / 4.f * (1.f - splashEase(2.4f, 3.4f, t)) + targetW * .03f;
-        float totalW = 0.f;
-        for (const char* l : kLetters) totalW += splashTextWidth(l, titleScale) + spacing;
-        totalW -= spacing;
-        float x = cx - totalW * .5f;
-        const float titleY = h * .74f;
-        for (int i = 0; i < 5; ++i) {
-            const float start = 2.15f + i * .09f;
-            const float a = splashEase(start, start + .25f, t) * fadeOut;
-            const float lw = splashTextWidth(kLetters[i], titleScale);
-            if (a > 0.f) {
-                const float settle = splashEase(start, start + .5f, t);
-                const float frame = std::floor(t * 24.f);
-                const float glitchOn = (1.f - settle) + (splashHash(frame + i) > .985f ? .6f : 0.f);
-                const float jx = (splashHash(frame * 3.1f + i) - .5f) * 22.f * glitchOn;
-                const float jy = (1.f - settle) * 26.f;
-                Color glow = kGreen; glow.a = a * .55f;
-                Color red{1.f, .22f, .35f, a * .45f * glitchOn};
-                Color cyan{.3f, .92f, 1.f, a * .45f * glitchOn};
-                drawSplashText(kLetters[i], x + jx - 4.f, titleY + jy, titleScale, red);
-                drawSplashText(kLetters[i], x + jx + 4.f, titleY + jy, titleScale, cyan);
-                drawSplashText(kLetters[i], x + jx, titleY + jy + 2.f, titleScale, glow);
-                const float w2 = settle;
-                Color face{kGreen.r + (kText.r - kGreen.r) * w2, kGreen.g + (kText.g - kGreen.g) * w2,
-                           kGreen.b + (kText.b - kGreen.b) * w2, a};
-                drawSplashText(kLetters[i], x + jx, titleY + jy, titleScale, face);
-            }
-            x += lw + spacing;
+        const float titleW = splashTextWidth("XENON", titleScale);
+        const float ta = splashEase(.5f, 1.1f, t) * fadeOut;
+        const float titleY = h * .70f + (1.f - splashEase(.5f, 1.1f, t)) * 18.f;
+        if (ta > 0.f) {
+            Color glow = kGreen; glow.a = ta * .35f;
+            drawSplashText("XENON", cx - titleW * .5f, titleY + 3.f, titleScale, glow);
+            Color face = kText; face.a = ta;
+            drawSplashText("XENON", cx - titleW * .5f, titleY, titleScale, face);
         }
+        const char* subtitle = "EXPERIMENTAL EMULATOR";
+        const float subScale = std::max(2.2f, titleScale * .14f);
+        Color sc = kMuted; sc.a = splashEase(.8f, 1.3f, t) * fadeOut;
+        if (sc.a > 0.f)
+            drawSplashText(subtitle, cx - splashTextWidth(subtitle, subScale) * .5f,
+                           titleY + h * .07f, subScale, sc);
 
-        // Subtitulo digitado.
-        const char* subtitle = "NEXT-GEN EXPERIMENTAL EMULATOR";
-        const int subLen = static_cast<int>(std::strlen(subtitle));
-        const int shown = static_cast<int>(std::clamp((t - 2.9f) * 38.f, 0.f, static_cast<float>(subLen)));
-        if (shown > 0) {
-            std::string sub(subtitle, shown);
-            if (shown < subLen || std::fmod(t, .8f) < .4f) sub += "_";
-            const float subScale = std::max(2.4f, titleScale * .16f);
-            Color c = kMuted; c.a = fadeOut;
-            drawSplashText(sub.c_str(), cx - splashTextWidth(subtitle, subScale) * .5f,
-                           titleY + h * .075f, subScale, c);
-        }
-
-        // Log de boot no canto, linha a linha.
-        static const char* kBoot[] = {
-            "> XENON CORE ............ ONLINE",
-            "> PPC DECODER ........... READY",
-            "> MEMORY MANAGER ........ 512 MB",
-            "> XDVDFS DRIVER ......... MOUNTED",
-            "> GPU PIPELINE .......... GLES2",
-        };
-        for (int i = 0; i < 5; ++i) {
-            const float start = .4f + i * .45f;
-            const float a = splashEase(start, start + .15f, t) * fadeOut * .85f;
-            if (a <= 0.f) continue;
-            Color c = (t - start) < .25f ? kGreen : kMuted; c.a = a;
-            drawSplashText(kBoot[i], 40.f, 48.f + i * 26.f, 2.4f, c);
-        }
-
-        // Barra de progresso segmentada com brilho correndo.
-        const float barW = std::min(w * .36f, 460.f);
+        // Barra de progresso fina.
+        const float barW = std::min(w * .28f, 320.f);
         const float barX = cx - barW * .5f;
-        const float barY = h * .92f;
-        const float progress = splashEase(.2f, naturalOutro, t);
-        constexpr int kSegments = 32;
-        const float segW = barW / kSegments;
-        for (int i = 0; i < kSegments; ++i) {
-            const float fi = static_cast<float>(i) / kSegments;
-            const bool on = fi < progress || outro > 0.f;
-            const float shine = std::exp(-std::pow((fi - std::fmod(t * .7f, 1.4f) + .2f) * 12.f, 2.f));
-            Color c = on ? Color{kGreen.r + shine * .6f, kGreen.g + shine * .1f, kGreen.b + shine * .5f, fadeOut}
-                         : Color{kPanel2.r, kPanel2.g, kPanel2.b, fadeOut * .8f};
-            renderer.roundedRect(barX + i * segW + 1.f, barY, segW - 2.f, 6.f, c, 2.f);
-        }
-        char pct[16];
-        std::snprintf(pct, sizeof(pct), "%d%%", static_cast<int>((outro > 0.f ? 1.f : progress) * 100.f));
-        Color pc = kGreen; pc.a = fadeOut;
-        drawSplashText(pct, barX + barW - splashTextWidth(pct, 2.2f), barY + 16.f, 2.2f, pc);
-        Color mc = kMuted; mc.a = fadeOut;
-        drawSplashText(progress < .5f ? "INITIALIZING" : "BOOTING SYSTEM", barX, barY + 16.f, 2.2f, mc);
-
-        if (t > 1.2f && outro <= 0.f) {
-            Color hc = kMuted; hc.a = (.35f + .35f * std::sin(t * 4.f));
-            const char* hint = "TOQUE OU PRESSIONE A PARA PULAR";
-            drawSplashText(hint, w - 40.f - splashTextWidth(hint, 2.f), h - 34.f, 2.f, hc);
-        }
+        const float barY = h * .90f;
+        const float progress = outro > 0.f ? 1.f : splashEase(.1f, naturalOutro, t);
+        Color track = kPanel2; track.a = fadeOut;
+        renderer.roundedRect(barX, barY, barW, 4.f, track, 2.f);
+        Color fill = kGreen; fill.a = fadeOut;
+        renderer.roundedRect(barX, barY, std::max(barW * progress, 4.f), 4.f, fill, 2.f);
     }
 
     void drawProfileSelect() {

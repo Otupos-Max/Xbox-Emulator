@@ -4,18 +4,13 @@
 
 namespace xenon {
 
-// Tela de abertura do Xenon renderizada 100% na GPU (GLSL ES 2.0) e
-// orquestrada em C++. Fases:
-//   0.0s - 1.3s  Hiperespaco: tunel de luz acelerando para o centro
-//   1.3s         Ignicao do nucleo: flash, onda de choque e flare anamorfico
-//   1.4s - 3.0s  Montagem do emblema: aneis hexagonais, laminas em X, particulas
-//   3.0s - 5.4s  Brilho especular, nebulosa de plasma e logotipo em glitch
-//   5.4s - 6.2s  Saida: zoom para dentro do nucleo e fade
+// Tela de abertura leve do Xenon (GLSL ES 2.0): emblema hexagonal com X
+// que aparece com fade/zoom suave, ~2.4s no total, pulavel.
 class SplashScreen {
 public:
-    static constexpr float kDuration = 6.2f;
-    static constexpr float kOutroLength = 0.8f;
-    static constexpr float kMinSkipTime = 0.6f;
+    static constexpr float kDuration = 2.4f;
+    static constexpr float kOutroLength = 0.4f;
+    static constexpr float kMinSkipTime = 0.3f;
 
     bool initialize();
     void shutdown();
